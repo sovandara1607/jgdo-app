@@ -87,6 +87,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkAccessibilityPermission() {
         guard !AXIsProcessTrusted() else { return }
+        // AXIsProcessTrusted() alone never registers the app with the OS —
+        // without the prompt option, JgDo would never appear in System
+        // Settings → Privacy & Security → Accessibility for the user to
+        // enable, no matter how many times they open that pane.
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             FloatingNoticeCenter.shared.showPermissionRequest(
                 title: "Accessibility Permission Required",

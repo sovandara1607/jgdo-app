@@ -1,8 +1,11 @@
 import SwiftUI
 
 /// The redesigned ghost-preview overlay content: a "snap target" reticle —
-/// glass-tinted tile, glowing corner brackets, and a colored ambient shadow —
-/// replacing the old flat, hand-drawn blue rectangle.
+/// tinted tile, glowing corner brackets, and a colored ambient shadow —
+/// replacing the old flat, hand-drawn blue rectangle. Deliberately no
+/// `.glassEffect()`: this tile's position is animating for nearly its whole
+/// visible lifetime, and recomputing real-time backdrop blur every frame
+/// while moving is exactly what caused the stutter this file used to have.
 ///
 /// Rect changes animate ONLY for discrete, one-off snaps (`state.animate`);
 /// during a live ⌘-drag, `showPersistent` sets `animate = false` so the tile
@@ -63,22 +66,13 @@ private struct GhostTile: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         ZStack {
-            // `.glassEffect()` does real-time backdrop blur sampling — great
-            // for a one-off flash, but recomputing it every ~16ms while the
-            // tile tracks a live ⌘-drag was the actual source of the
-            // remaining lag/wobble (disabling the position *animation*
-            // wasn't enough, since this was a rendering-cost problem, not an
-            // easing one). During live tracking, fall back to a flat tint —
-            // materially cheaper to redraw at drag frequency.
-            if animate {
-                Color.clear
-                    .glassEffect(
-                        isPrimary ? .regular.tint(Color.accentColor.opacity(0.32)) : .regular.tint(.white.opacity(0.10)),
-                        in: shape
-                    )
-            } else {
-                shape.fill(isPrimary ? Color.accentColor.opacity(0.24) : Color.white.opacity(0.08))
-            }
+            // Flat tint only — no `.glassEffect()`. Its real-time backdrop
+            // blur is expensive to recompute every frame, and this tile's
+            // position is animating (live ⌘-drag tracking, or settling into
+            // a discrete snap) for basically its entire visible lifetime, so
+            // there's no point where the expensive version would actually
+            // pay for itself.
+            shape.fill(isPrimary ? Color.accentColor.opacity(0.24) : Color.white.opacity(0.08))
             shape
                 .strokeBorder(
                     LinearGradient(
@@ -96,12 +90,10 @@ private struct GhostTile: View {
             }
         }
         .frame(width: size.width, height: size.height)
-        // The colored ambient glow is also a per-frame blur cost — keep it
-        // for the discrete flash, shrink it substantially during live
-        // tracking rather than dropping it outright (still reads as "this
-        // tile has depth," just cheap enough not to fight the drag).
-        .shadow(color: isPrimary ? Color.accentColor.opacity(animate ? 0.55 : 0.3) : .clear,
-                radius: animate ? 24 : 8, y: animate ? 10 : 4)
+        // Same reasoning as the fill above — keep the ambient glow cheap
+        // unconditionally instead of a bigger blur that only makes sense at
+        // rest, which this tile rarely is.
+        .shadow(color: isPrimary ? Color.accentColor.opacity(0.3) : .clear, radius: 8, y: 4)
         .position(center)
         .opacity(isValid(rect) ? 1 : 0)
         .animation(animate ? snapAnimation : nil, value: shown)
