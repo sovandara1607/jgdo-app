@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ServiceManagement
+import Sparkle
 
 // MARK: - Window plumbing
 
@@ -55,6 +56,8 @@ struct GeneralSettingsView: View {
     @AppStorage(AppSettings.cleaningDurationKey) private var cleaningDuration: Int = 60
     @AppStorage(AppSettings.dragSnapEnabledKey) private var dragSnapEnabled = true
     @AppStorage(AppSettings.adjacentResizeEnabledKey) private var adjacentResizeEnabled = true
+    @AppStorage(AppSettings.showPerCoreCPUKey) private var showPerCoreCPU = false
+    @State private var updateService = UpdateService.shared
 
     var body: some View {
         Form {
@@ -90,6 +93,61 @@ struct GeneralSettingsView: View {
                 Text("Hold ⌘ while dragging or resizing a window to snap it into whatever space is left, or to resize snapped neighbors in lockstep. A searchable list of windows appears next to the cursor while dragging — type, use Tab/arrows, or just keep dragging to pick which one to align against.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Status Popover") {
+                Toggle("Show per-core CPU usage", isOn: $showPerCoreCPU)
+                Text("When enabled, the status popover displays individual CPU core utilization. Disabled by default to reduce background CPU usage.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { updateService.updater.automaticallyChecksForUpdates },
+                    set: { updateService.setAutoCheckUpdates($0) }
+                ))
+                Toggle("Include pre-release versions", isOn: Binding(
+                    get: { updateService.allowPrereleaseUpdates },
+                    set: { updateService.setAllowPrereleaseUpdates($0) }
+                ))
+                Button("Check Now…") {
+                    updateService.checkForUpdates()
+                }
+                .disabled(AppcastConfig.appcastURL == "https://your-domain.com/appcast.xml")
+
+                if updateService.updateAvailable, let item = updateService.updateInfo {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("Update Available: \(item.displayVersionString)")
+                                .foregroundStyle(.primary)
+                        }
+                        if let notes = item.releaseNotesURL {
+                            Link("Release Notes", destination: notes)
+                                .font(.footnote)
+                        }
+                        Text("Click \"Check Now…\" to review and install.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                } else if let error = updateService.updateCheckError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                } else if let lastCheck = updateService.lastCheckDate {
+                    Text("Last checked: \(lastCheck.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if AppcastConfig.appcastURL == "https://your-domain.com/appcast.xml" {
+                    Text("⚠️ Configure appcast URL in AppcastConfig.swift to enable updates")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
             }
 
             Section("Keyboard Cleaning") {
@@ -234,6 +292,7 @@ struct ShortcutsSettingsView: View {
 struct ClipboardSettingsView: View {
     @AppStorage(ClipboardService.enabledKey) private var enabled = true
     @AppStorage(ClipboardService.limitKey) private var limit = 200
+    @AppStorage(AppSettings.clipboardPollIntervalKey) private var pollInterval: Double = 1.5
     @State private var confirmClear = false
 
     var body: some View {
@@ -252,6 +311,17 @@ struct ClipboardSettingsView: View {
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                             .frame(width: 68, alignment: .trailing)
+                    }
+                }
+                LabeledContent("Poll interval") {
+                    HStack(spacing: 10) {
+                        Slider(value: $pollInterval, in: AppSettings.clipboardPollIntervalRange, step: 0.5)
+                            .frame(width: 200)
+                            .disabled(!enabled)
+                        Text("\(pollInterval, specifier: "%.1f") s")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .trailing)
                     }
                 }
                 Text("Pinned items are always kept. Content marked confidential by password managers is never recorded.")
