@@ -49,7 +49,7 @@ final class WindowListViewModel {
 
     func startRefresh() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
     }

@@ -55,6 +55,7 @@ final class SystemMonitor {
     var status = SystemStatus()
     private var timer: Timer?
     private let fetcher = SystemStatusFetcher()
+    private var isPopoverVisible = false
     // Serial queue: keeps the fetcher's delta state (prevCPU/prevNet/…) free of
     // races and guarantees samples never overlap, even if a disk walk runs long.
     private let sampleQueue = DispatchQueue(label: "com.jgdo.systemmonitor.sample", qos: .utility)
@@ -80,7 +81,7 @@ final class SystemMonitor {
             self.sample()
         }
 
-        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 4.0, repeats: true) { [weak self] _ in
             self?.sample()
         }
         // .common mode keeps it firing during popover/menu tracking.
@@ -91,6 +92,7 @@ final class SystemMonitor {
     /// Gather a sample off the main thread (the IORegistry/getifaddrs walks are
     /// the costly part), then publish on the main thread for SwiftUI.
     private func sample() {
+        guard isPopoverVisible else { return }
         sampleQueue.async { [weak self] in
             guard let self else { return }
             let snapshot = self.fetcher.fetch()
@@ -104,6 +106,10 @@ final class SystemMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
+    }
+
+    func setPopoverVisible(_ visible: Bool) {
+        isPopoverVisible = visible
     }
 }
 
@@ -128,7 +134,7 @@ final class SystemStatusFetcher {
         var s = SystemStatus()
         (s.cpuPercent,
          s.cpuUser, s.cpuSystem)  = cpuOverall()
-        s.cpuPerCore              = cpuPerCore()
+        s.cpuPerCore              = AppSettings.showPerCoreCPU ? cpuPerCore() : []
         (s.memApp, s.memWired,
          s.memCompressed,
          s.memCached, s.memFree,

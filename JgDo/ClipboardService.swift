@@ -3,7 +3,7 @@ import SwiftData
 
 /// Watches the general pasteboard and records history into SwiftData.
 /// Polling `changeCount` is the only supported way to observe the pasteboard
-/// on macOS; 0.5 s keeps CPU use negligible.
+/// on macOS; 1.5 s default keeps CPU use negligible (configurable 0.5–5.0 s).
 @Observable
 final class ClipboardService {
     static let shared = ClipboardService()
@@ -27,7 +27,7 @@ final class ClipboardService {
 
     func start() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: AppSettings.clipboardPollInterval, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { self?.poll() }
         }
     }

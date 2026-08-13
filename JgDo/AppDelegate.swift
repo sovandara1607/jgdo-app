@@ -142,6 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Start sampling just before showing so values are ready, then it
             // keeps running until the popover closes (see popoverDidClose).
+            SystemMonitor.shared.setPopoverVisible(true)
             SystemMonitor.shared.start()
             MonitorControlService.shared.refresh()
             WorkflowInsightsService.shared.refresh()
@@ -660,6 +661,7 @@ final class KeyablePanel: NSPanel {
 
 extension AppDelegate: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
+        SystemMonitor.shared.setPopoverVisible(false)
         SystemMonitor.shared.stop()
     }
 }

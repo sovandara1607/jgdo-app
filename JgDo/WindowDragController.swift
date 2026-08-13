@@ -38,6 +38,16 @@ final class WindowDragController {
     /// to whichever window it just picked as the alignment target.
     private var lastCursorPoint: CGPoint = .zero
 
+    // Caching for move mode (fetchWindowBounds called every 4 ticks instead of every tick)
+    private var moveTick = 0
+    private var cachedObstacles: [CGRect] = []
+    private var cachedPickerCandidates: [WindowManagerService.WindowBounds] = []
+    private var lastCacheScreen: NSScreen?
+
+    // Caching for resize mode
+    private var resizeTick = 0
+    private var cachedResizeObstacles: [CGRect] = []
+
     private struct DragSession {
         let axWindow: AXUIElement
         let pid: pid_t
@@ -147,12 +157,18 @@ final class WindowDragController {
         dragLog.debug("event tap created and enabled")
     }
 
+    private var retryCount = 0
+    private let baseRetryDelay: TimeInterval = 1.5
+    private let maxRetryDelay: TimeInterval = 30.0
+
     private func scheduleRetry() {
         retryTimer?.invalidate()
-        retryTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] t in
-            guard AXIsProcessTrusted() else { return }
-            t.invalidate()
+        let delay = min(baseRetryDelay * pow(2.0, Double(retryCount)), maxRetryDelay)
+        retryCount += 1
+        retryTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard AXIsProcessTrusted() else { self?.scheduleRetry(); return }
             self?.createTap()
+            self?.retryCount = 0
         }
     }
 
@@ -263,8 +279,17 @@ final class WindowDragController {
         case .move:
             guard AppSettings.dragSnapEnabled else { return }
             guard let (screen, bounds) = screenAndBounds(forCGPoint: point) else { return }
-            let allWindows = windowService.fetchWindowBounds()
-                .filter { isOtherWindow($0.windowID, pid: $0.pid, session: s) }
+
+            moveTick += 1
+            let screenChanged = lastCacheScreen != screen
+            if moveTick % 4 == 0 || cachedObstacles.isEmpty || screenChanged {
+                let allWindows = windowService.fetchWindowBounds()
+                    .filter { isOtherWindow($0.windowID, pid: $0.pid, session: s) }
+                cachedObstacles = allWindows.map { $0.bounds }
+                cachedPickerCandidates = allWindows
+                lastCacheScreen = screen
+            }
+            let allWindows = cachedPickerCandidates
 
             // The searchable "align next to…" list is shown for the whole
             // gesture (positioned once, not repositioned every tick). By
@@ -292,7 +317,7 @@ final class WindowDragController {
                 highlightRect = target.bounds
             }
 
-            let obstacles = allWindows.map { $0.bounds }
+            let obstacles = cachedObstacles
             let rect = SnapEngine.availableSpace(at: anchor, obstacles: obstacles, in: bounds)
             guard rect.width > 40, rect.height > 40 else {
                 dragLog.debug("move: \(obstacles.count) obstacles, anchor=\(anchor.debugDescription) → rect too small (\(rect.debugDescription)), skipping this tick")
@@ -380,9 +405,11 @@ final class WindowDragController {
         guard let (screen, bounds) = screenAndBounds(forCGPoint: lastCursorPoint) else { return }
         guard let target = DragTargetPickerOverlay.shared.state.selectedCandidate else { return }
 
-        let allObstacles = windowService.fetchWindowBounds()
-            .filter { isOtherWindow($0.windowID, pid: $0.pid, session: s) }
-            .map { $0.bounds }
+        let allObstacles = cachedObstacles.isEmpty
+            ? windowService.fetchWindowBounds()
+                .filter { isOtherWindow($0.windowID, pid: $0.pid, session: s) }
+                .map { $0.bounds }
+            : cachedObstacles
         let side = SnapEngine.nearestSide(of: target.bounds, to: lastCursorPoint)
         let anchor = SnapEngine.anchorPoint(adjacentTo: target.bounds, side: side, in: bounds)
         let rect = SnapEngine.availableSpace(at: anchor, obstacles: allObstacles, in: bounds)
@@ -399,6 +426,13 @@ final class WindowDragController {
 
     private func endTracking(at point: CGPoint) {
         dragLog.debug("drag session ended: hadSession=\(self.session != nil) mode=\(String(describing: self.session?.mode))")
+        // Clear caches
+        moveTick = 0
+        cachedObstacles = []
+        cachedPickerCandidates = []
+        lastCacheScreen = nil
+        resizeTick = 0
+        cachedResizeObstacles = []
         defer { session = nil }
         SnapPreviewOverlay.shared.hidePersistent()
         DragTargetPickerOverlay.shared.hide()

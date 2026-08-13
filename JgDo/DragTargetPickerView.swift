@@ -12,24 +12,34 @@ struct DragTargetPickerView: View {
     private var rows: [DragTargetPickerState.Candidate] { Array(state.filtered.prefix(6)) }
 
     var body: some View {
-        GlassEffectContainer {
-            VStack(alignment: .leading, spacing: 6) {
-                searchRow
-                if rows.isEmpty {
-                    Text("No matching windows")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                } else {
-                    ForEach(rows) { c in
-                        row(c, selected: c.windowID == state.selectedCandidate?.windowID)
-                    }
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer {
+                content
+            }
+            .frame(width: 280)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            content
+                .frame(width: 280)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            searchRow
+            if rows.isEmpty {
+                Text("No matching windows")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(rows) { c in
+                    row(c, selected: c.windowID == state.selectedCandidate?.windowID)
                 }
             }
-            .padding(10)
         }
-        .frame(width: 280)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(10)
     }
 
     private var searchRow: some View {
