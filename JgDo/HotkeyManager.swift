@@ -16,6 +16,9 @@ final class HotkeyManager {
     nonisolated(unsafe) private var tap: CFMachPort?
     nonisolated(unsafe) private var tapSource: CFRunLoopSource?
     private var retryTimer: Timer?
+    private var retryCount = 0
+    private let baseRetryDelay: TimeInterval = 1.5
+    private let maxRetryDelay: TimeInterval = 30.0
 
     // Keycodes whose keyDown we consumed — their keyUp must be consumed too,
     // otherwise the frontmost app receives an orphan key-up and plays the
@@ -86,10 +89,12 @@ final class HotkeyManager {
 
     private func scheduleRetry() {
         retryTimer?.invalidate()
-        retryTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] t in
-            guard AXIsProcessTrusted() else { return }
-            t.invalidate()
+        let delay = min(baseRetryDelay * pow(2.0, Double(retryCount)), maxRetryDelay)
+        retryCount += 1
+        retryTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard AXIsProcessTrusted() else { self?.scheduleRetry(); return }
             self?.createTap()
+            self?.retryCount = 0
         }
     }
 
