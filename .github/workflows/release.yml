@@ -20,9 +20,17 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Sparkle tools
+      # NOTE: `brew install sparkle` installs the Sparkle Test App (a cask), not the
+      # sign_update/generate_appcast CLI tools, and the cask is deprecated anyway.
+      # Download the official prebuilt tools archive instead, version-matched to the
+      # Sparkle submodule (see JgDo.xcodeproj/project.xcworkspace/.../Package.resolved).
+      - name: Install Sparkle CLI tools
         run: |
-          brew install sparkle
+          curl -L -o sparkle-tools.tar.xz \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.5/Sparkle-2.9.5.tar.xz
+          mkdir -p sparkle-tools
+          tar -xf sparkle-tools.tar.xz -C sparkle-tools
+          sparkle-tools/bin/generate_appcast --help >/dev/null
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -33,6 +41,13 @@ jobs:
       # using a Developer ID cert + notarization. Ad-hoc-signed apps are NOT notarized,
       # so first-time users will see a Gatekeeper warning and need to right-click > Open
       # (or run `xattr -cr JgDo.app`) to launch.
+      #
+      # Sparkle compares CFBundleVersion (CURRENT_PROJECT_VERSION), NOT the marketing
+      # version string, to decide whether an update is "newer". Driving it from
+      # github.run_number guarantees every release build number is strictly greater
+      # than the last, so in-app "Check for Updates" always finds new releases without
+      # anyone having to remember to hand-bump a build number. MARKETING_VERSION comes
+      # straight from the pushed tag so the display version always matches the tag.
       - name: Build and Archive (ad-hoc signed)
         run: |
           xcodebuild \
@@ -45,7 +60,9 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=YES \
-            CODE_SIGNING_ALLOWED=YES
+            CODE_SIGNING_ALLOWED=YES \
+            MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
       - name: Export app from archive
         run: |
@@ -55,38 +72,41 @@ jobs:
           codesign --force --deep --sign - build/export/JgDo.app
           codesign --verify --deep --strict --verbose=2 build/export/JgDo.app
 
+      # generate_appcast (below) reads every archive out of one directory, so the DMG
+      # has to live there before we run it.
       - name: Create DMG
         run: |
+          mkdir -p build/updates
           hdiutil create -volname "JgDo" \
             -srcfolder build/export/JgDo.app \
             -ov -format UDZO \
-            build/JgDo-${{ github.ref_name }}.dmg
+            build/updates/JgDo-${{ github.ref_name }}.dmg
 
-      - name: Sign DMG with Sparkle
-        id: sign
+      # Sparkle 2.x's generate_appcast signs each archive itself (no separate
+      # sign_update step) and infers version + minimum OS straight from the app's
+      # Info.plist inside the DMG. The key is piped in via stdin so it never touches
+      # disk or a `run:` argv where it could leak into logs.
+      # NOTE: no --channel flag here. The app's SparkleDelegateProxy.allowedChannels()
+      # only ever returns {} or {"beta"} — it treats "no channel tag" as the stable
+      # channel and filters out anything else (Sparkle's SUAppcastDriver drops any item
+      # whose <sparkle:channel> isn't in allowedChannels). Passing --channel "stable"
+      # here tagged every release "stable", which is never an allowed channel, so every
+      # release was silently invisible to "Check for Updates" regardless of version.
+      - name: Generate appcast.xml
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          SIGNATURE=$(JgDo/External/Sparkle/bin/sign_update -f build/JgDo-${{ github.ref_name }}.dmg -p "$SPARKLE_PRIVATE_KEY" 2>&1 | tail -1)
-          echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
-
-      - name: Generate appcast.xml
-        run: |
-          JgDo/External/Sparkle/bin/generate_appcast \
-            --output build/appcast.xml \
-            --download-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
-            --version "${{ github.ref_name }}" \
-            --signature "${{ steps.sign.outputs.signature }}" \
-            --minimum-system-version 14.0 \
-            --channel "stable" \
-            build/JgDo-${{ github.ref_name }}.dmg
+          echo "$SPARKLE_PRIVATE_KEY" | sparkle-tools/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
+            build/updates/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/JgDo-${{ github.ref_name }}.dmg
-            build/appcast.xml
+            build/updates/JgDo-${{ github.ref_name }}.dmg
+            build/updates/appcast.xml
           generate_release_notes: true
           draft: false
           prerelease: false

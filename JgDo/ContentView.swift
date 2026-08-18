@@ -115,7 +115,7 @@ private enum Theme {
     static let divider    = Color.primary.opacity(0.08)
 }
 
-// MARK: - System Status popover root (minimal dashboard)
+// MARK: - System Status popover root (elevated dashboard)
 
 /// Popover sections — one long tile stack was unusable, so content is split
 /// into three scannable tabs. The chosen tab persists across opens.
@@ -137,32 +137,35 @@ struct StatusPopoverView: View {
     @AppStorage(AppSettings.cleaningDurationKey) private var cleaningDuration: Int = 60
     @AppStorage("popoverTab") private var tab: PopoverTab = .overview
     @Environment(\.dismissPopover) private var dismissPopover
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let s = monitor.status
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             header
-            sectionPicker
+            tabBar
+            Divider()
+                .frame(height: 1)
+                .background(Color.primary.opacity(0.08))
             ScrollView {
                 VStack(spacing: 0) {
                     switch tab {
                     case .overview:
                         MetricTile(icon: "cpu", title: "CPU",
-                                   value: String(format: "%.0f%%", s.cpuPercent),
-                                   progress: s.cpuPercent / 100) { EmptyView() }
+                                   value: String(format: "%.0f%%", monitor.status.cpuPercent),
+                                   progress: monitor.status.cpuPercent / 100) { EmptyView() }
                         MetricTile(icon: "memorychip", title: "Memory",
-                                   value: String(format: "%.0f%%", s.memPercent * 100),
-                                   progress: s.memPercent) { EmptyView() }
+                                   value: String(format: "%.0f%%", monitor.status.memPercent * 100),
+                                   progress: monitor.status.memPercent) { EmptyView() }
                         MetricTile(icon: "internaldrive", title: "Disk",
-                                   value: String(format: "%.0f%%", s.diskPercent * 100),
-                                   progress: s.diskPercent) { EmptyView() }
+                                   value: String(format: "%.0f%%", monitor.status.diskPercent * 100),
+                                   progress: monitor.status.diskPercent) { EmptyView() }
                         MonitorControlsTile()
-                        if s.hasBattery { batteryTile(s) }
+                        if monitor.status.hasBattery { batteryTile(monitor.status) }
                     case .system:
-                        cpuTile(s)
-                        memoryTile(s)
-                        diskTile(s)
-                        networkTile(s)
+                        cpuTile(monitor.status)
+                        memoryTile(monitor.status)
+                        diskTile(monitor.status)
+                        networkTile(monitor.status)
                     case .productivity:
                         WorkspacesTile()
                         InsightsTile()
@@ -173,9 +176,36 @@ struct StatusPopoverView: View {
             .animation(.spring(duration: 0.3), value: tab)
             footer
         }
-        .padding(14)
-        .frame(width: 300, height: 440)
-        .background(.regularMaterial)   // adapts to system Light/Dark
+        .padding(16)
+        .frame(width: 320, height: colorScheme == .dark ? 480 : 460)
+        .background(colorScheme == .dark ? Color("DarkBackground") : Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.12), lineWidth: 1)
+        )
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(PopoverTab.allCases, id: \.self) { t in
+                Button(action: { withAnimation(.spring(duration: 0.2)) { tab = t } }) {
+                    HStack(spacing: 4) {
+                        Text(t.label)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(tab == t ? Color.accentColor : .secondary)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .background(
+                        Capsule()
+                            .fill(tab == t ? Color.accentColor.opacity(0.15) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 8)
     }
 
     private var sectionPicker: some View {
@@ -197,7 +227,7 @@ struct StatusPopoverView: View {
                    progress: nil) {
             VStack(alignment: .leading, spacing: 4) {
                 Slider(value: $edgeGap, in: AppSettings.edgeGapRange, step: 1)
-                    .tint(Theme.accent)
+                    .tint(Color.accentColor)
                 Text("Padding around screen edges and between snapped windows.")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
@@ -208,18 +238,26 @@ struct StatusPopoverView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Image(systemName: "gauge.with.dots.needle.67percent")
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Theme.accent)
+                .foregroundStyle(Color.accentColor)
             Text("System Status")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.primary)
             Spacer()
-            Text(hostName)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(hostName)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.thinMaterial)
     }
 
     // MARK: CPU tile
