@@ -33,6 +33,17 @@ jobs:
           p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           p12-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
 
+      - name: Verify p12 was imported correctly
+        run: |
+          echo "Checking keychain..."
+          security list-keychains
+          echo "=== Certificates in System keychain ==="
+          security find-identity -v -p codesigning /Library/Keychains/System.keychain 2>/dev/null || echo "No System keychain access"
+          echo "=== Certificates in login keychain ==="
+          security find-identity -v -p codesigning login.keychain
+          echo "=== All identities ==="
+          security find-identity -v
+
       - name: Unlock keychain and list certificates
         run: |
           security list-keychains -s login.keychain
