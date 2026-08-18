@@ -74,11 +74,18 @@ jobs:
 
       # generate_appcast (below) reads every archive out of one directory, so the DMG
       # has to live there before we run it.
+      #
+      # -srcfolder pointed straight at JgDo.app before, which puts only the app
+      # in the mounted volume — no Applications shortcut to drag onto, so the
+      # classic drag-to-install gesture didn't work. Stage a folder with both
+      # the app and an /Applications symlink instead.
       - name: Create DMG
         run: |
-          mkdir -p build/updates
+          mkdir -p build/updates build/dmg-root
+          cp -R build/export/JgDo.app build/dmg-root/
+          ln -s /Applications build/dmg-root/Applications
           hdiutil create -volname "JgDo" \
-            -srcfolder build/export/JgDo.app \
+            -srcfolder build/dmg-root \
             -ov -format UDZO \
             build/updates/JgDo-${{ github.ref_name }}.dmg
 
