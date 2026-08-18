@@ -26,7 +26,8 @@ final class DragTargetPickerOverlay {
         // frozen wherever it last appeared instead of following the drag to
         // whichever screen — main or secondary — it's actually happening on.
         let size = win.contentViewController?.view.fittingSize ?? NSSize(width: 280, height: 140)
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
+        let screenFrame = screen.frame
+        let mainH = NSScreen.screens.first?.frame.height ?? screenFrame.height
         let appKitPoint = CGPoint(x: point.x, y: mainH - point.y)
         var x = appKitPoint.x + 28
         var y = appKitPoint.y - size.height / 2

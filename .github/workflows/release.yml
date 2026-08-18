@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Sparkle tools
+        run: |
+          brew install sparkle
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # NOTE: This project is on a free Apple Developer "Personal Team", which cannot
+      # issue a "Developer ID Application" certificate (that requires the paid Apple
+      # Developer Program). Until enrolled, we build and self-sign (ad-hoc) instead of
+      # using a Developer ID cert + notarization. Ad-hoc-signed apps are NOT notarized,
+      # so first-time users will see a Gatekeeper warning and need to right-click > Open
+      # (or run `xattr -cr JgDo.app`) to launch.
+      - name: Build and Archive (ad-hoc signed)
+        run: |
+          xcodebuild \
+            -project JgDo.xcodeproj \
+            -scheme JgDo \
+            -configuration Release \
+            -archivePath build/JgDo.xcarchive \
+            -allowProvisioningUpdates \
+            clean archive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES
+
+      - name: Export app from archive
+        run: |
+          mkdir -p build/export
+          cp -R "build/JgDo.xcarchive/Products/Applications/JgDo.app" build/export/
+          # Re-sign ad-hoc (deep) to ensure all nested frameworks/bundles are signed consistently.
+          codesign --force --deep --sign - build/export/JgDo.app
+          codesign --verify --deep --strict --verbose=2 build/export/JgDo.app
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "JgDo" \
+            -srcfolder build/export/JgDo.app \
+            -ov -format UDZO \
+            build/JgDo-${{ github.ref_name }}.dmg
+
+      - name: Sign DMG with Sparkle
+        id: sign
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          SIGNATURE=$(JgDo/External/Sparkle/bin/sign_update -f build/JgDo-${{ github.ref_name }}.dmg -p "$SPARKLE_PRIVATE_KEY" 2>&1 | tail -1)
+          echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
+
+      - name: Generate appcast.xml
+        run: |
+          JgDo/External/Sparkle/bin/generate_appcast \
+            --output build/appcast.xml \
+            --download-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
+            --version "${{ github.ref_name }}" \
+            --signature "${{ steps.sign.outputs.signature }}" \
+            --minimum-system-version 14.0 \
+            --channel "stable" \
+            build/JgDo-${{ github.ref_name }}.dmg
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/JgDo-${{ github.ref_name }}.dmg
+            build/appcast.xml
+          generate_release_notes: true
+          draft: false
+          prerelease: false

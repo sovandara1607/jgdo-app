@@ -30,13 +30,16 @@ final class WorkspaceService {
         let windows = windowService.fetchWindows()
         guard !windows.isEmpty else { return nil }
 
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
         let running = NSWorkspace.shared.runningApplications
         let workspace = Workspace(name: name)
 
         for info in windows {
             guard let app = running.first(where: { $0.processIdentifier == info.pid }),
                   let bundleID = app.bundleIdentifier else { continue }
+            // Find the screen containing this window for correct coordinate conversion
+            let screen = NSScreen.screens.first { $0.frame.contains(CGRect(x: info.bounds.minX, y: NSScreen.screens.first?.frame.height ?? 0 - info.bounds.maxY, width: info.bounds.width, height: info.bounds.height)) } ?? NSScreen.main ?? NSScreen.screens[0]
+            let screenFrame = screen.frame
+            let mainH = NSScreen.screens.first?.frame.height ?? screenFrame.height
             // CG coords (top-left origin) → AppKit coords (bottom-left origin).
             let appKit = CGRect(x: info.bounds.minX,
                                 y: mainH - info.bounds.maxY,
@@ -132,8 +135,9 @@ final class WorkspaceService {
     }
 
     private func apply(frame: CGRect, to axWin: AXUIElement) {
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        var origin = CGPoint(x: frame.minX, y: mainH - frame.maxY)
+        let screen = NSScreen.screens.first { $0.frame.contains(frame) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let screenFrame = screen.frame
+        var origin = CGPoint(x: frame.minX, y: screenFrame.maxY - frame.maxY)
         var size = CGSize(width: frame.width, height: frame.height)
         if let pv = AXValueCreate(.cgPoint, &origin) {
             AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, pv)

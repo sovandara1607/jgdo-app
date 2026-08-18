@@ -133,7 +133,8 @@ final class WindowManagerService {
     func applyFrame(_ frame: CGRect, to window: WindowInfo, on screen: NSScreen) {
         guard let axWin = findAXWindow(for: window) else { return }
         let mainH = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        var origin = CGPoint(x: frame.minX, y: mainH - frame.maxY)
+        let screenFrame = screen.frame
+        var origin = CGPoint(x: frame.minX, y: screenFrame.maxY - frame.maxY)
         var size   = CGSize(width: frame.width, height: frame.height)
         if let pv = AXValueCreate(.cgPoint, &origin) {
             AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, pv)
