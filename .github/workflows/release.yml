@@ -86,6 +86,12 @@ jobs:
       # sign_update step) and infers version + minimum OS straight from the app's
       # Info.plist inside the DMG. The key is piped in via stdin so it never touches
       # disk or a `run:` argv where it could leak into logs.
+      # NOTE: no --channel flag here. The app's SparkleDelegateProxy.allowedChannels()
+      # only ever returns {} or {"beta"} — it treats "no channel tag" as the stable
+      # channel and filters out anything else (Sparkle's SUAppcastDriver drops any item
+      # whose <sparkle:channel> isn't in allowedChannels). Passing --channel "stable"
+      # here tagged every release "stable", which is never an allowed channel, so every
+      # release was silently invisible to "Check for Updates" regardless of version.
       - name: Generate appcast.xml
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
@@ -93,7 +99,6 @@ jobs:
           echo "$SPARKLE_PRIVATE_KEY" | sparkle-tools/bin/generate_appcast \
             --ed-key-file - \
             --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
-            --channel "stable" \
             build/updates/
 
       - name: Create GitHub Release
