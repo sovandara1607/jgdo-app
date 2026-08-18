@@ -27,31 +27,13 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Import code signing certificates
-        uses: apple-actions/import-codesign-certs@v4
-        with:
-          p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-          p12-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
-
-      - name: Verify p12 was imported correctly
-        run: |
-          echo "Checking keychain..."
-          security list-keychains
-          echo "=== Certificates in System keychain ==="
-          security find-identity -v -p codesigning /Library/Keychains/System.keychain 2>/dev/null || echo "No System keychain access"
-          echo "=== Certificates in login keychain ==="
-          security find-identity -v -p codesigning login.keychain
-          echo "=== All identities ==="
-          security find-identity -v
-
-      - name: Unlock keychain and list certificates
-        run: |
-          security list-keychains -s login.keychain
-          security default-keychain -s login.keychain
-          security unlock-keychain -p "${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}" login.keychain
-          security find-identity -v -p codesigning
-
-      - name: Build and Archive
+      # NOTE: This project is on a free Apple Developer "Personal Team", which cannot
+      # issue a "Developer ID Application" certificate (that requires the paid Apple
+      # Developer Program). Until enrolled, we build and self-sign (ad-hoc) instead of
+      # using a Developer ID cert + notarization. Ad-hoc-signed apps are NOT notarized,
+      # so first-time users will see a Gatekeeper warning and need to right-click > Open
+      # (or run `xattr -cr JgDo.app`) to launch.
+      - name: Build and Archive (ad-hoc signed)
         run: |
           xcodebuild \
             -project JgDo.xcodeproj \
@@ -61,16 +43,17 @@ jobs:
             -allowProvisioningUpdates \
             clean archive \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" \
-            DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }}
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES
 
-      - name: Export Notarized App
+      - name: Export app from archive
         run: |
-          xcodebuild \
-            -exportArchive \
-            -archivePath build/JgDo.xcarchive \
-            -exportPath build/export \
-            -exportOptionsPlist JgDo/ExportOptions.plist
+          mkdir -p build/export
+          cp -R "build/JgDo.xcarchive/Products/Applications/JgDo.app" build/export/
+          # Re-sign ad-hoc (deep) to ensure all nested frameworks/bundles are signed consistently.
+          codesign --force --deep --sign - build/export/JgDo.app
+          codesign --verify --deep --strict --verbose=2 build/export/JgDo.app
 
       - name: Create DMG
         run: |
