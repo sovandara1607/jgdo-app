@@ -481,7 +481,8 @@ final class WindowDragController {
         let appKitPoint = CGPoint(x: point.x, y: mainH - point.y)
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(appKitPoint) }) ?? NSScreen.main else { return nil }
         let vf = screen.visibleFrame
-        let bounds = CGRect(x: vf.minX, y: mainH - vf.maxY, width: vf.width, height: vf.height)
+        let screenFrame = screen.frame
+        let bounds = CGRect(x: vf.minX, y: screenFrame.maxY - vf.maxY, width: vf.width, height: vf.height)
         return (screen, bounds)
     }
 

@@ -217,8 +217,8 @@ final class WindowResizeService {
         lastCycleLayout = layout
         lastCycleIndex = index
         lastCycleFraction = fraction
-        let mainH = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        lastCycleCGFrame = CGRect(x: frame.minX, y: mainH - frame.maxY, width: frame.width, height: frame.height)
+        let screenFrame = screen.frame
+        lastCycleCGFrame = CGRect(x: frame.minX, y: screenFrame.maxY - frame.maxY, width: frame.width, height: frame.height)
         return frame
     }
 
@@ -279,9 +279,9 @@ final class WindowResizeService {
         guard let frame = WindowManagerService.axFrame(of: axWindow) else { return nil }
 
         let screen = screenForWindow(axWindow) ?? NSScreen.main ?? NSScreen.screens[0]
-        let mainH = NSScreen.screens.first?.frame.height ?? screen.frame.height
+        let screenFrame = screen.frame
         let vf = screen.visibleFrame
-        let area = CGRect(x: vf.minX, y: mainH - vf.maxY, width: vf.width, height: vf.height)   // CG coords
+        let area = CGRect(x: vf.minX, y: screenFrame.maxY - vf.maxY, width: vf.width, height: vf.height)   // CG coords
 
         // Find the preset closest to the window's current size (it may not
         // be exactly on a step, e.g. the user resized it by hand), then move
@@ -300,7 +300,7 @@ final class WindowResizeService {
         WindowManagerService.setAXFrame(newFrameCG, of: axWindow)
         AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
 
-        let appKitFrame = CGRect(x: newFrameCG.minX, y: mainH - newFrameCG.maxY,
+        let appKitFrame = CGRect(x: newFrameCG.minX, y: screenFrame.maxY - newFrameCG.maxY,
                                   width: newFrameCG.width, height: newFrameCG.height)
         let percent = Int((nextFraction * 100).rounded())
         return (appKitFrame, "\(percent)%")
@@ -325,8 +325,8 @@ final class WindowResizeService {
 
     private func apply(frame: CGRect, to axWindow: AXUIElement, screen: NSScreen) {
         // Convert AppKit frame (bottom-left origin) → CG coords (top-left origin)
-        let mainH = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        let cgFrame = CGRect(x: frame.minX, y: mainH - frame.maxY, width: frame.width, height: frame.height)
+        let screenFrame = screen.frame
+        let cgFrame = CGRect(x: frame.minX, y: screenFrame.maxY - frame.maxY, width: frame.width, height: frame.height)
         WindowManagerService.setAXFrame(cgFrame, of: axWindow)
     }
 }
