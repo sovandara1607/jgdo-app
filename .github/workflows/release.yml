@@ -41,6 +41,13 @@ jobs:
       # using a Developer ID cert + notarization. Ad-hoc-signed apps are NOT notarized,
       # so first-time users will see a Gatekeeper warning and need to right-click > Open
       # (or run `xattr -cr JgDo.app`) to launch.
+      #
+      # Sparkle compares CFBundleVersion (CURRENT_PROJECT_VERSION), NOT the marketing
+      # version string, to decide whether an update is "newer". Driving it from
+      # github.run_number guarantees every release build number is strictly greater
+      # than the last, so in-app "Check for Updates" always finds new releases without
+      # anyone having to remember to hand-bump a build number. MARKETING_VERSION comes
+      # straight from the pushed tag so the display version always matches the tag.
       - name: Build and Archive (ad-hoc signed)
         run: |
           xcodebuild \
@@ -53,7 +60,9 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=YES \
-            CODE_SIGNING_ALLOWED=YES
+            CODE_SIGNING_ALLOWED=YES \
+            MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
       - name: Export app from archive
         run: |
