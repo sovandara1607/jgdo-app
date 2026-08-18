@@ -124,10 +124,17 @@ jobs:
       # the default GITHUB_TOKEN can't push to a different repo. Skips quietly
       # (rather than failing the release) if that secret isn't set yet.
       - name: Update Homebrew tap
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          # `secrets.*` can't be referenced in a step-level `if:` (GitHub
+          # Actions rejects it as an unrecognized named-value there), so the
+          # skip-when-unset check has to live in the script instead.
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set, skipping Homebrew tap update."
+            exit 0
+          fi
+
           VERSION="${GITHUB_REF_NAME#v}"
           SHA256=$(shasum -a 256 "build/updates/JgDo-${{ github.ref_name }}.dmg" | awk '{print $1}')
 
