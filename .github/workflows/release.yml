@@ -33,6 +33,13 @@ jobs:
           p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           p12-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
 
+      - name: Unlock keychain and list certificates
+        run: |
+          security list-keychains -s login.keychain
+          security default-keychain -s login.keychain
+          security unlock-keychain -p "${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}" login.keychain
+          security find-identity -v -p codesigning
+
       - name: Build and Archive
         run: |
           xcodebuild \
