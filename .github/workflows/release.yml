@@ -37,12 +37,11 @@ jobs:
 
       - name: Build and Archive
         run: |
-          cd JgDo
           xcodebuild \
-            -project JgDo.xcodeproj \
+            -project JgDo/JgDo.xcodeproj \
             -scheme JgDo \
             -configuration Release \
-            -archivePath build/JgDo.xcarchive \
+            -archivePath JgDo/build/JgDo.xcarchive \
             -allowProvisioningUpdates \
             clean archive \
             CODE_SIGN_STYLE=Manual \
@@ -51,41 +50,37 @@ jobs:
 
       - name: Export Notarized App
         run: |
-          cd JgDo
           xcodebuild \
             -exportArchive \
-            -archivePath build/JgDo.xcarchive \
-            -exportPath build/export \
-            -exportOptionsPlist ExportOptions.plist
+            -archivePath JgDo/build/JgDo.xcarchive \
+            -exportPath JgDo/build/export \
+            -exportOptionsPlist JgDo/ExportOptions.plist
 
       - name: Create DMG
         run: |
-          cd JgDo
           hdiutil create -volname "JgDo" \
-            -srcfolder build/export/JgDo.app \
+            -srcfolder JgDo/build/export/JgDo.app \
             -ov -format UDZO \
-            build/JgDo-${{ github.ref_name }}.dmg
+            JgDo/build/JgDo-${{ github.ref_name }}.dmg
 
       - name: Sign DMG with Sparkle
         id: sign
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          cd JgDo
-          SIGNATURE=$(./External/Sparkle/bin/sign_update -f build/JgDo-${{ github.ref_name }}.dmg -p "$SPARKLE_PRIVATE_KEY" 2>&1 | tail -1)
+          SIGNATURE=$(JgDo/External/Sparkle/bin/sign_update -f JgDo/build/JgDo-${{ github.ref_name }}.dmg -p "$SPARKLE_PRIVATE_KEY" 2>&1 | tail -1)
           echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
 
       - name: Generate appcast.xml
         run: |
-          cd JgDo
-          ./External/Sparkle/bin/generate_appcast \
-            --output build/appcast.xml \
+          JgDo/External/Sparkle/bin/generate_appcast \
+            --output JgDo/build/appcast.xml \
             --download-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
             --version "${{ github.ref_name }}" \
             --signature "${{ steps.sign.outputs.signature }}" \
             --minimum-system-version 14.0 \
             --channel "stable" \
-            build/JgDo-${{ github.ref_name }}.dmg
+            JgDo/build/JgDo-${{ github.ref_name }}.dmg
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
