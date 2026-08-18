@@ -2,7 +2,36 @@
 
 A native macOS menu bar productivity app for window management, system monitoring, and clipboard history.
 
-Built with Swift · SwiftUI + AppKit · SwiftData · macOS 14+
+[![Release](https://img.shields.io/github/v/release/sovandara1607/jgdo-app?label=Latest%20Release&color=blue)](https://github.com/sovandara1607/jgdo-app/releases/latest)
+[![License](https://img.shields.io/badge/license-proprietary-lightgrey)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%2014+-blue)](https://github.com/sovandara1607/jgdo-app/releases)
+[![Swift](https://img.shields.io/badge/Swift-6-orange)](https://swift.org)
+[![Xcode](https://img.shields.io/badge/Xcode-16+-blue)](https://developer.apple.com/xcode/)
+
+---
+
+## Download
+
+### Recommended: Direct Download
+[![Download .dmg](https://img.shields.io/badge/Download-JgDo-arm64.dmg-blue?style=for-the-badge&logo=apple)](https://github.com/sovandara1607/jgdo-app/releases/latest/download/JgDo-arm64.dmg)
+
+**Requirements:** macOS 14 Sonoma or later (Apple Silicon or Intel)
+
+### Installation Steps
+1. **Download** the `.dmg` file from above
+2. **Open** the `.dmg` file
+3. **Drag** JgDo into your Applications folder
+4. **Launch** JgDo from Applications
+5. **Grant** Accessibility permission when prompted (required for window management)
+6. **Optional:** Enable "Launch at Login" in Settings for auto-start
+
+### Auto-Update
+JgDo includes [Sparkle](https://sparkle-project.org/) for automatic updates. When a new version is available:
+- A badge appears on the menu bar icon
+- Click **Check for Updates** in the menu bar popover or Settings
+- Updates are signed and verified for security
+
+---
 
 ## Features
 
@@ -42,6 +71,8 @@ Built with Swift · SwiftUI + AppKit · SwiftData · macOS 14+
 - **Focus tracking** — see where your time goes today
 - **App pair suggestions** — snap two apps side by side when you bounce between them
 
+---
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
@@ -55,28 +86,27 @@ Built with Swift · SwiftUI + AppKit · SwiftData · macOS 14+
 | ⌃⌥M | Maximize window |
 | ⌃⌥⎋ | Cancel / close overlay |
 
-## Requirements
+---
 
-- macOS 14 Sonoma or later
-- Accessibility permission (for window management features)
-- Screen Recording permission (optional, for window thumbnails)
+## Build from Source
 
-## Installation
+### Prerequisites
+- **Xcode 16** or later
+- **macOS 14+** deployment target
 
-### Download
-Download the latest `.dmg` from [Releases](https://github.com/sovandara1607/jgdo-app/releases).
-
-### Auto-Update
-The app includes Sparkle for automatic updates. Click **Check for Updates** in the menu bar popover or Settings.
-
-### Build from Source
+### Build
 ```bash
 git clone https://github.com/sovandara1607/jgdo-app.git
 cd jgdo-app
 xcodebuild -project JgDo.xcodeproj -scheme JgDo build
 ```
 
-**Note:** The project requires **Xcode 16+** with project format 100.
+### Create Release Archive
+```bash
+xcodebuild -project JgDo.xcodeproj -scheme JgDo -configuration Release -archivePath build/JgDo.xcarchive archive
+```
+
+---
 
 ## Architecture
 
@@ -85,13 +115,27 @@ xcodebuild -project JgDo.xcodeproj -scheme JgDo build
 - **CGEvent tap** — global hotkey monitoring (never blocks input)
 - **AX API** — window position/size manipulation
 
+---
+
 ## Permissions
 
 | Permission | Required By | Notes |
 |------------|-------------|-------|
 | Accessibility | Window management, hotkeys, cleaning mode | Prompted on first launch |
+| Screen Recording | Window thumbnails (optional) | Only needed for visual previews |
 | Login Item | Launch at startup | Configurable in Settings |
+
+---
+
+## Support
+
+- **Issues:** [GitHub Issues](https://github.com/sovandara1607/jgdo-app/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/sovandara1607/jgdo-app/discussions)
+
+---
 
 ## License
 
 Copyright © 2024 Sovandara Rith. All rights reserved.
+
+This is proprietary software. Unauthorized distribution is prohibited.
