@@ -28,6 +28,10 @@ enum SettingsWindow {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
+
+    static func hide() {
+        window?.close()
+    }
 }
 
 // MARK: - Root
@@ -41,6 +45,8 @@ struct SettingsRootView: View {
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
             ClipboardSettingsView()
                 .tabItem { Label("Clipboard", systemImage: "doc.on.clipboard") }
+            LicenseSettingsView()
+                .tabItem { Label("License", systemImage: "key") }
             AboutSettingsView()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
@@ -339,6 +345,54 @@ struct ClipboardSettingsView: View {
             }
         } message: {
             Text("Pinned items are kept.")
+        }
+    }
+}
+
+// MARK: - License
+
+struct LicenseSettingsView: View {
+    @State private var license = LicenseManager.shared
+    @State private var confirmDeactivate = false
+
+    var body: some View {
+        Form {
+            Section("Status") {
+                LabeledContent("Plan") {
+                    Text(license.plan.displayName)
+                        .fontWeight(.medium)
+                        .foregroundStyle(license.isPro ? Color.accentColor : .secondary)
+                }
+                if let key = license.licenseKey {
+                    LabeledContent("License Key") {
+                        Text(key)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if license.isPro {
+                Section {
+                    Button("Deactivate License…") { confirmDeactivate = true }
+                    Text("Removes this key from JgDo. You'll need to activate again to keep using the app.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Section {
+                    Button("Buy a License →") {
+                        NSWorkspace.shared.open(URL(string: "https://jgdo.sovandara.lol/pricing")!)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .confirmationDialog("Deactivate this license?", isPresented: $confirmDeactivate) {
+            Button("Deactivate", role: .destructive) {
+                license.deactivate()
+                SettingsWindow.hide()
+                ActivationWindow.show {}
+            }
         }
     }
 }

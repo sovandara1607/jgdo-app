@@ -113,20 +113,42 @@ private enum Theme {
     static let track      = Color.primary.opacity(0.10)
     static let accent     = Color.accentColor      // the user's system accent
     static let divider    = Color.primary.opacity(0.08)
+    static let cardFill   = Color.primary.opacity(0.04)
+    static let cardStroke = Color.primary.opacity(0.08)
 }
 
-// MARK: - System Status popover root (elevated dashboard)
+/// Fixed per-metric colors for the dashboard's quick-glance cards and
+/// sparklines — distinct hues so CPU/Memory/Disk/Battery read apart at a
+/// glance, independent of the user's system accent color (used elsewhere for
+/// single-metric detail views).
+private enum MetricColor {
+    static let cpu     = Color.orange
+    static let memory  = Color.blue
+    static let disk    = Color.purple
+    static let battery = Color.yellow
+    static let network = Color.cyan
+}
 
-/// Popover sections — one long tile stack was unusable, so content is split
-/// into three scannable tabs. The chosen tab persists across opens.
-private enum PopoverTab: String, CaseIterable {
+// MARK: - System Status popover root (native sidebar + list, à la System Settings)
+
+/// Popover sections, shown as sidebar rows. The chosen section persists across opens.
+private enum PopoverTab: String, CaseIterable, Identifiable, Hashable {
     case overview, system, productivity
+    var id: Self { self }
 
     var label: String {
         switch self {
         case .overview:     return "Overview"
         case .system:       return "System"
         case .productivity: return "Workspace"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .overview:     return "square.grid.2x2"
+        case .system:       return "gauge.with.dots.needle.67percent"
+        case .productivity: return "rectangle.3.group"
         }
     }
 }
@@ -137,86 +159,265 @@ struct StatusPopoverView: View {
     @AppStorage(AppSettings.cleaningDurationKey) private var cleaningDuration: Int = 60
     @AppStorage("popoverTab") private var tab: PopoverTab = .overview
     @Environment(\.dismissPopover) private var dismissPopover
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            tabBar
-            Divider()
-                .frame(height: 1)
-                .background(Color.primary.opacity(0.08))
-            ScrollView {
-                VStack(spacing: 0) {
-                    switch tab {
-                    case .overview:
-                        MetricTile(icon: "cpu", title: "CPU",
-                                   value: String(format: "%.0f%%", monitor.status.cpuPercent),
-                                   progress: monitor.status.cpuPercent / 100) { EmptyView() }
-                        MetricTile(icon: "memorychip", title: "Memory",
-                                   value: String(format: "%.0f%%", monitor.status.memPercent * 100),
-                                   progress: monitor.status.memPercent) { EmptyView() }
-                        MetricTile(icon: "internaldrive", title: "Disk",
-                                   value: String(format: "%.0f%%", monitor.status.diskPercent * 100),
-                                   progress: monitor.status.diskPercent) { EmptyView() }
-                        MonitorControlsTile()
-                        if monitor.status.hasBattery { batteryTile(monitor.status) }
-                    case .system:
-                        cpuTile(monitor.status)
-                        memoryTile(monitor.status)
-                        diskTile(monitor.status)
-                        networkTile(monitor.status)
-                    case .productivity:
-                        WorkspacesTile()
-                        InsightsTile()
-                        windowGapTile
-                    }
+        VStack(spacing: 12) {
+            iconToolbar
+            VStack(alignment: .leading, spacing: 8) {
+                sectionHeader
+                ScrollView {
+                    card
                 }
             }
-            .animation(.spring(duration: 0.3), value: tab)
             footer
         }
-        .padding(16)
-        .frame(width: 320, height: colorScheme == .dark ? 480 : 460)
-        .background(colorScheme == .dark ? Color("DarkBackground") : Color(.controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.12), lineWidth: 1)
-        )
+        .padding(14)
+        .frame(width: 340, height: 520)
+        .background(.regularMaterial)
     }
 
-    private var tabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(PopoverTab.allCases, id: \.self) { t in
+    // MARK: Icon toolbar (section switcher, pill container)
+
+    private var iconToolbar: some View {
+        HStack(spacing: 4) {
+            ForEach(PopoverTab.allCases) { t in
                 Button(action: { withAnimation(.spring(duration: 0.2)) { tab = t } }) {
-                    HStack(spacing: 4) {
-                        Text(t.label)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(tab == t ? Color.accentColor : .secondary)
-                            .padding(.vertical, 8)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .background(
-                        Capsule()
-                            .fill(tab == t ? Color.accentColor.opacity(0.15) : Color.clear)
-                    )
+                    Image(systemName: t.icon)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(tab == t ? .white : .secondary)
+                        .frame(width: 32, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(tab == t ? Color.accentColor : Color.clear)
+                        )
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 8)
+        .padding(5)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Theme.cardFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Theme.cardStroke, lineWidth: 1)
+        )
     }
 
-    private var sectionPicker: some View {
-        Picker("Section", selection: $tab) {
-            ForEach(PopoverTab.allCases, id: \.self) { t in
-                Text(t.label).tag(t)
+    // MARK: Section header (uppercase caption + quick settings shortcut)
+
+    private var sectionHeader: some View {
+        HStack {
+            Text(tab.label.uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                dismissPopover()
+                SettingsWindow.show()
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
+        }
+    }
+
+    // MARK: Card (rounded container, hairline-divided rows — replaces the tab content)
+
+    private var card: some View {
+        VStack(spacing: 0) {
+            switch tab {
+            case .overview:
+                statGrid
+                rowDivider
+                Text("HARDWARE USAGE")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                    .padding(.bottom, 2)
+                sparkMetricRow(icon: "cpu", label: "CPU",
+                                percent: monitor.status.cpuPercent / 100,
+                                color: MetricColor.cpu, history: monitor.cpuHistory)
+                rowDivider
+                sparkMetricRow(icon: "memorychip", label: "Memory",
+                                percent: monitor.status.memPercent,
+                                color: MetricColor.memory, history: monitor.memHistory)
+                rowDivider
+                sparkMetricRow(icon: "internaldrive", label: "Disk",
+                                percent: monitor.status.diskPercent,
+                                color: MetricColor.disk, history: monitor.diskHistory)
+                if monitor.status.hasBattery {
+                    rowDivider
+                    batteryRow(monitor.status)
+                }
+                rowDivider
+                MonitorControlsTile()
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                rowDivider
+                cleaningRow
+            case .system:
+                cpuTile(monitor.status).cardRowPadding()
+                rowDivider
+                memoryTile(monitor.status).cardRowPadding()
+                rowDivider
+                diskTile(monitor.status).cardRowPadding()
+                rowDivider
+                networkTile(monitor.status).cardRowPadding()
+            case .productivity:
+                WorkspacesTile().cardRowPadding()
+                rowDivider
+                InsightsTile().cardRowPadding()
+                rowDivider
+                windowGapTile.cardRowPadding()
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.small)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.cardFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.cardStroke, lineWidth: 1)
+        )
+    }
+
+    private var rowDivider: some View {
+        Rectangle().fill(Theme.divider).frame(height: 1)
+            .padding(.horizontal, 14)
+    }
+
+    // MARK: Overview — quick-stat mini cards
+
+    private var statGrid: some View {
+        HStack(spacing: 8) {
+            statMini(icon: "cpu", label: "CPU",
+                     value: String(format: "%.0f%%", monitor.status.cpuPercent), color: MetricColor.cpu)
+            statMini(icon: "memorychip", label: "Memory",
+                     value: String(format: "%.0f%%", monitor.status.memPercent * 100), color: MetricColor.memory)
+            statMini(icon: "internaldrive", label: "Disk",
+                     value: String(format: "%.0f%%", monitor.status.diskPercent * 100), color: MetricColor.disk)
+        }
+        .padding(12)
+    }
+
+    private func statMini(icon: String, label: String, value: String, color: Color) -> some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(color)
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Text(value)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+    }
+
+    // MARK: Overview — bar + sparkline row
+
+    private func sparkMetricRow(icon: String, label: String, percent: Double, color: Color, history: [Double]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(color)
+                    .frame(width: 16)
+                Text(label)
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text(String(format: "%.0f%%", percent * 100))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            ColoredBar(progress: percent, color: color)
+            Sparkline(values: history, color: color)
+                .frame(height: 22)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private func batteryRow(_ s: SystemStatus) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: s.isCharging ? "bolt.fill" : "battery.75")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MetricColor.battery)
+                    .frame(width: 16)
+                Text("Battery")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("\(s.batteryPercent)%")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            ColoredBar(progress: Double(s.batteryPercent) / 100, color: MetricColor.battery)
+            HStack(spacing: 6) {
+                Text(s.isCharging ? "Charging" : "On battery")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                if s.batteryMinutesRemain > 0 {
+                    let h = s.batteryMinutesRemain / 60, m = s.batteryMinutesRemain % 60
+                    Text(h > 0 ? "~\(h)h \(m)m left" : "~\(m)m left")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private var cleaningRow: some View {
+        Button {
+            dismissPopover()
+            // Let the popover fade out before the lock overlay appears.
+            let duration = cleaningDuration
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                CleaningModeController.shared.start(duration: max(duration, 15))
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "bubbles.and.sparkles")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Keyboard Cleaning")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("Locks the keyboard so you can wipe it down")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 
     // MARK: Window gap setting
@@ -233,31 +434,6 @@ struct StatusPopoverView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-    }
-
-    // MARK: Header
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "gauge.with.dots.needle.67percent")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-            Text("System Status")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
-            Spacer()
-            HStack(spacing: 6) {
-                Text(hostName)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.thinMaterial)
     }
 
     // MARK: CPU tile
@@ -342,8 +518,7 @@ struct StatusPopoverView: View {
             Rectangle().fill(Theme.divider).frame(width: 1, height: 26)
             netColumn(icon: "arrow.up", label: "UPLOAD", value: s.netUpSpeed.asSpeed())
         }
-        .padding(.vertical, 9)
-        .overlay(Rectangle().fill(Theme.divider).frame(height: 1), alignment: .bottom)
+        .padding(.vertical, 5)
     }
 
     private func netColumn(icon: String, label: String, value: String) -> some View {
@@ -385,73 +560,49 @@ struct StatusPopoverView: View {
         }
     }
 
-    // MARK: Footer
+    // MARK: Footer — uptime strip + full-width pill action buttons
 
     private var footer: some View {
-        HStack(spacing: 8) {
-            InfoChip(icon: "clock", text: uptimeString)
-            InfoChip(icon: "apple.logo", text: osVersion)
-            Spacer()
-            cleaningButton
-            settingsButton
-            quitButton
-        }
-        .padding(.top, 2)
-    }
-
-    private var cleaningButton: some View {
-        Button {
-            dismissPopover()
-            // Let the popover fade out before the lock overlay appears.
-            let duration = cleaningDuration
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                CleaningModeController.shared.start(duration: max(duration, 15))
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                InfoChip(icon: "clock", text: uptimeString)
+                InfoChip(icon: "apple.logo", text: osVersion)
+                Spacer()
             }
-        } label: {
-            footerIcon("bubbles.and.sparkles")
-        }
-        .buttonStyle(.plain)
-        .help("Keyboard cleaning mode — locks the keyboard")
-    }
-
-    private var settingsButton: some View {
-        Button {
-            dismissPopover()
-            SettingsWindow.show()
-        } label: {
-            footerIcon("gearshape")
-        }
-        .buttonStyle(.plain)
-        .help("Settings")
-    }
-
-    private func footerIcon(_ symbol: String) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.secondary)
-            .frame(width: 22, height: 22)
-    }
-
-    private var quitButton: some View {
-        Button(action: { NSApp.terminate(nil) }) {
-            HStack(spacing: 4) {
-                Image(systemName: "power")
-                    .font(.system(size: 11, weight: .medium))
-                Text("Quit")
-                    .font(.system(size: 11, weight: .medium))
+            HStack(spacing: 8) {
+                pillButton(icon: "gearshape", label: "Settings") {
+                    dismissPopover()
+                    SettingsWindow.show()
+                }
+                pillButton(icon: "power", label: "Quit") {
+                    NSApp.terminate(nil)
+                }
+                .keyboardShortcut("q", modifiers: .command)
             }
-            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func pillButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 11, weight: .medium))
+                Text(label).font(.system(size: 11.5, weight: .medium))
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.cardStroke, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
-        .keyboardShortcut("q", modifiers: .command)
-        .help("Quit JgDo (⌘Q)")
+        .help(label)
     }
 
     // MARK: Derived strings
-
-    private var hostName: String {
-        ProcessInfo.processInfo.hostName.components(separatedBy: ".").first ?? "Mac"
-    }
 
     private var osVersion: String {
         "macOS " + (ProcessInfo.processInfo.operatingSystemVersionString
@@ -496,8 +647,7 @@ struct MetricTile<Detail: View>: View {
             }
             detail()
         }
-        .padding(.vertical, 9)
-        .overlay(Rectangle().fill(Theme.divider).frame(height: 1), alignment: .bottom)
+        .padding(.vertical, 5)
     }
 }
 
@@ -516,6 +666,58 @@ struct AccentBar: View {
             }
         }
         .frame(height: 4)
+    }
+}
+
+/// Same as `AccentBar` but with a caller-supplied color, for the dashboard's
+/// per-metric hues (CPU orange, Memory blue, …) instead of the system accent.
+struct ColoredBar: View {
+    let progress: Double
+    let color: Color
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.track)
+                Capsule()
+                    .fill(color)
+                    .frame(width: max(geo.size.width * min(max(progress, 0), 1), 3))
+                    .animation(.easeInOut(duration: 0.45), value: progress)
+            }
+        }
+        .frame(height: 4)
+    }
+}
+
+/// Minimal line-chart sparkline over a rolling window of 0...1 samples.
+struct Sparkline: View {
+    let values: [Double]
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            if values.count > 1 {
+                let w = geo.size.width, h = geo.size.height
+                let stepX = w / CGFloat(values.count - 1)
+                Path { path in
+                    for (i, v) in values.enumerated() {
+                        let x = CGFloat(i) * stepX
+                        let y = h - CGFloat(min(max(v, 0), 1)) * h
+                        if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                        else { path.addLine(to: CGPoint(x: x, y: y)) }
+                    }
+                }
+                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            }
+        }
+    }
+}
+
+/// Consistent horizontal/vertical insets for rows dropped straight into
+/// `StatusPopoverView.card` (the System/Workspace tabs, which reuse the
+/// pre-existing detail tiles rather than the Overview tab's custom rows).
+extension View {
+    func cardRowPadding() -> some View {
+        self.padding(.horizontal, 14).padding(.vertical, 9)
     }
 }
 

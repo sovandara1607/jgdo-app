@@ -53,6 +53,15 @@ struct SystemStatus {
 final class SystemMonitor {
     static let shared = SystemMonitor()
     var status = SystemStatus()
+
+    /// Rolling samples (0...1) for the popover's sparkline graphs. Capped at
+    /// ~2.5 minutes of history at the 4s sample interval — enough to show a
+    /// trend without the array growing unbounded while the popover sits open.
+    private(set) var cpuHistory: [Double] = []
+    private(set) var memHistory: [Double] = []
+    private(set) var diskHistory: [Double] = []
+    private let historyLimit = 40
+
     private var timer: Timer?
     private let fetcher = SystemStatusFetcher()
     private var isPopoverVisible = false
@@ -99,8 +108,16 @@ final class SystemMonitor {
             DispatchQueue.main.async {
                 guard self.timer != nil else { return }
                 self.status = snapshot
+                self.pushHistory(&self.cpuHistory,  snapshot.cpuPercent / 100)
+                self.pushHistory(&self.memHistory,  snapshot.memPercent)
+                self.pushHistory(&self.diskHistory, snapshot.diskPercent)
             }
         }
+    }
+
+    private func pushHistory(_ buffer: inout [Double], _ value: Double) {
+        buffer.append(value)
+        if buffer.count > historyLimit { buffer.removeFirst(buffer.count - historyLimit) }
     }
 
     func stop() {

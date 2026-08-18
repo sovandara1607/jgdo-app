@@ -59,8 +59,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // The status item and its click handler exist unconditionally — they're
+        // how an unlicensed install reaches the activation window at all.
         setupStatusItem()
         setupStatusPopover()
+
+        if LicenseManager.shared.isPro {
+            startLicensedFeatures()
+        } else {
+            ActivationWindow.show { [weak self] in self?.startLicensedFeatures() }
+        }
+    }
+
+    /// Everything that requires an active license: window snapping, the HUD,
+    /// clipboard history, the command palette, hotkeys, drag-to-snap. JgDo has
+    /// no free tier, so none of this runs until `LicenseManager.isPro` is true
+    /// (either at launch, or the moment ActivationWindow succeeds).
+    private func startLicensedFeatures() {
         setupHUDPanel()
         setupClipboardPanel()
         setupCommandPalettePanel()
@@ -69,8 +84,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupDragController()
         ClipboardService.shared.start()
         WorkflowInsightsService.shared.pruneOldEvents()
-        // System monitoring is started on demand (only while the popover is open)
-        // to keep background CPU/energy use at zero when idle.
         // Seed recent apps so dual-resize works from the very first hotkey press.
         // runningApplications is in arbitrary order — put the actual frontmost
         // app first so the first dual-snap picks the right partner.
@@ -135,6 +148,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func toggleStatusPopover() {
+        guard LicenseManager.shared.isPro else {
+            ActivationWindow.show { [weak self] in self?.startLicensedFeatures() }
+            return
+        }
         guard let button = statusItem?.button, let popover = statusPopover else { return }
         hideHUD()
         if popover.isShown {
