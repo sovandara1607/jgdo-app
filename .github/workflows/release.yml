@@ -20,9 +20,18 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Sparkle tools
+      # NOTE: `brew install sparkle` installs the Sparkle Test App (a cask), not the
+      # sign_update/generate_appcast CLI tools, and the cask is deprecated anyway.
+      # Download the official prebuilt tools archive instead, version-matched to the
+      # Sparkle submodule (see JgDo.xcodeproj/project.xcworkspace/.../Package.resolved).
+      - name: Install Sparkle CLI tools
         run: |
-          brew install sparkle
+          curl -L -o sparkle-tools.tar.xz \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.5/Sparkle-2.9.5.tar.xz
+          mkdir -p sparkle-tools
+          tar -xf sparkle-tools.tar.xz -C sparkle-tools
+          sparkle-tools/bin/sign_update --help >/dev/null
+          sparkle-tools/bin/generate_appcast --help >/dev/null
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -67,12 +76,12 @@ jobs:
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          SIGNATURE=$(JgDo/External/Sparkle/bin/sign_update -f build/JgDo-${{ github.ref_name }}.dmg -p "$SPARKLE_PRIVATE_KEY" 2>&1 | tail -1)
+          SIGNATURE=$(sparkle-tools/bin/sign_update -f build/JgDo-${{ github.ref_name }}.dmg -p "$SPARKLE_PRIVATE_KEY" 2>&1 | tail -1)
           echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
 
       - name: Generate appcast.xml
         run: |
-          JgDo/External/Sparkle/bin/generate_appcast \
+          sparkle-tools/bin/generate_appcast \
             --output build/appcast.xml \
             --download-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
             --version "${{ github.ref_name }}" \
