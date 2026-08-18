@@ -30,7 +30,6 @@ jobs:
             https://github.com/sparkle-project/Sparkle/releases/download/2.9.5/Sparkle-2.9.5.tar.xz
           mkdir -p sparkle-tools
           tar -xf sparkle-tools.tar.xz -C sparkle-tools
-          sparkle-tools/bin/sign_update --help >/dev/null
           sparkle-tools/bin/generate_appcast --help >/dev/null
 
       - name: Show Xcode version
@@ -64,38 +63,36 @@ jobs:
           codesign --force --deep --sign - build/export/JgDo.app
           codesign --verify --deep --strict --verbose=2 build/export/JgDo.app
 
+      # generate_appcast (below) reads every archive out of one directory, so the DMG
+      # has to live there before we run it.
       - name: Create DMG
         run: |
+          mkdir -p build/updates
           hdiutil create -volname "JgDo" \
             -srcfolder build/export/JgDo.app \
             -ov -format UDZO \
-            build/JgDo-${{ github.ref_name }}.dmg
+            build/updates/JgDo-${{ github.ref_name }}.dmg
 
-      - name: Sign DMG with Sparkle
-        id: sign
+      # Sparkle 2.x's generate_appcast signs each archive itself (no separate
+      # sign_update step) and infers version + minimum OS straight from the app's
+      # Info.plist inside the DMG. The key is piped in via stdin so it never touches
+      # disk or a `run:` argv where it could leak into logs.
+      - name: Generate appcast.xml
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          SIGNATURE=$(sparkle-tools/bin/sign_update -f build/JgDo-${{ github.ref_name }}.dmg -p "$SPARKLE_PRIVATE_KEY" 2>&1 | tail -1)
-          echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
-
-      - name: Generate appcast.xml
-        run: |
-          sparkle-tools/bin/generate_appcast \
-            --output build/appcast.xml \
-            --download-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
-            --version "${{ github.ref_name }}" \
-            --signature "${{ steps.sign.outputs.signature }}" \
-            --minimum-system-version 14.0 \
+          echo "$SPARKLE_PRIVATE_KEY" | sparkle-tools/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
             --channel "stable" \
-            build/JgDo-${{ github.ref_name }}.dmg
+            build/updates/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/JgDo-${{ github.ref_name }}.dmg
-            build/appcast.xml
+            build/updates/JgDo-${{ github.ref_name }}.dmg
+            build/updates/appcast.xml
           generate_release_notes: true
           draft: false
           prerelease: false
