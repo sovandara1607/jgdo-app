@@ -85,13 +85,17 @@ struct OrganizeWorkspaceView: View {
                     ForEach(Array(frames.enumerated()), id: \.offset) { i, pair in
                         let (_, frame) = pair
                         let vf = screen.visibleFrame
+                        let boxWidth: CGFloat = max(frame.width * scaleX - 2, 2)
+                        let boxHeight: CGFloat = max(frame.height * scaleY - 2, 2)
+                        let centerX: CGFloat = (frame.minX - vf.minX + frame.width / 2) * scaleX
+                        let centerY: CGFloat = geo.size.height - (frame.minY - vf.minY + frame.height / 2) * scaleY
+                        let border = RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .strokeBorder(Color.accentColor, lineWidth: 1)
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
                             .fill(Color.accentColor.opacity(0.35))
-                            .overlay(RoundedRectangle(cornerRadius: 3, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 1))
-                            .frame(width: max(frame.width * scaleX - 2, 2),
-                                   height: max(frame.height * scaleY - 2, 2))
-                            .position(x: (frame.minX - vf.minX + frame.width / 2) * scaleX,
-                                      y: geo.size.height - (frame.minY - vf.minY + frame.height / 2) * scaleY)
+                            .overlay(border)
+                            .frame(width: boxWidth, height: boxHeight)
+                            .position(x: centerX, y: centerY)
                             .id(i)
                     }
                 }
