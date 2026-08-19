@@ -104,6 +104,19 @@ final class ClipboardService {
         trim()
         Persistence.shared.save()
         reload()
+
+        // OCR runs async and writes back onto the already-inserted item —
+        // `item` is a live @Model reference, so mutating it later and
+        // re-saving is safe (same pattern as the `newest.createdAt = Date()`
+        // re-save above).
+        if item.kind == .image, let data = item.imageData {
+            ClipboardOCRService.recognizeText(in: data) { [weak self] text in
+                guard let self, let text, !text.isEmpty else { return }
+                item.recognizedText = text
+                Persistence.shared.save()
+                self.reload()
+            }
+        }
     }
 
     private func isDuplicate(_ existing: ClipboardItem, of new: ClipboardItem) -> Bool {
@@ -156,6 +169,7 @@ final class ClipboardService {
         return items.filter {
             $0.preview.lowercased().contains(q)
                 || ($0.sourceAppName ?? "").lowercased().contains(q)
+                || ($0.recognizedText ?? "").lowercased().contains(q)
         }
     }
 
@@ -191,6 +205,12 @@ final class ClipboardService {
             pb.setString(item.text ?? "", forType: .string)
         case .image:
             if let data = item.imageData { pb.setData(data, forType: .png) }
+            // Also write the OCR'd text (if any) as a plain-text pasteboard
+            // type alongside the image, so pasting into a text-only target
+            // still gets something useful.
+            if let text = item.recognizedText, !text.isEmpty {
+                pb.setString(text, forType: .string)
+            }
         case .file:
             let urls = item.filePaths.map { URL(fileURLWithPath: $0) as NSURL }
             pb.writeObjects(urls)

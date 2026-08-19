@@ -297,7 +297,8 @@ final class WindowResizeService {
         let newHeight = area.height * nextFraction
         let newFrameCG = CGRect(x: area.midX - newWidth / 2, y: area.midY - newHeight / 2,
                                  width: newWidth, height: newHeight)
-        WindowManagerService.setAXFrame(newFrameCG, of: axWindow)
+        let applied = WindowManagerService.setAXFrame(newFrameCG, of: axWindow)
+        WindowSnapUndo.shared.record(axWindow: axWindow, previous: frame, applied: applied)
         AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
 
         let appKitFrame = CGRect(x: newFrameCG.minX, y: screenFrame.maxY - newFrameCG.maxY,
@@ -323,10 +324,62 @@ final class WindowResizeService {
         apply(frame: frame, to: axWindow, screen: screen)
     }
 
+    // MARK: - Move to next/previous display
+
+    enum DisplayDirection { case next, previous }
+
+    /// Moves the focused window to the adjacent display (screens ordered
+    /// left-to-right by origin), preserving its position/size as a fraction
+    /// of the screen's visible area — so a window docked to the left edge
+    /// stays docked to the left edge on the new display, just rescaled to
+    /// that display's size, rather than snapping to a fixed corner. Returns
+    /// the frame it actually applied (AppKit coords), or nil if there's only
+    /// one display or no focused window was found.
+    @discardableResult
+    func moveFrontmostWindowToDisplay(_ direction: DisplayDirection) -> (frame: CGRect, screen: NSScreen)? {
+        let app = targetApp ?? NSWorkspace.shared.frontmostApplication
+        guard let app else { return nil }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &ref) == .success,
+              let ref else { return nil }
+        let axWindow = ref as! AXUIElement
+
+        let screens = NSScreen.screens.sorted { $0.frame.minX < $1.frame.minX }
+        guard screens.count > 1,
+              let oldScreen = screenForWindow(axWindow),
+              let curIdx = screens.firstIndex(of: oldScreen),
+              let cgFrame = WindowManagerService.axFrame(of: axWindow) else { return nil }
+        let newIdx = direction == .next ? (curIdx + 1) % screens.count : (curIdx - 1 + screens.count) % screens.count
+        let newScreen = screens[newIdx]
+
+        // Current frame in AppKit coords (bottom-left origin) — the same
+        // space `visibleFrame`/`targetFrame`/`apply` already use.
+        let oldScreenFrame = oldScreen.frame
+        let currentAppKitFrame = CGRect(x: cgFrame.minX, y: oldScreenFrame.maxY - cgFrame.maxY,
+                                         width: cgFrame.width, height: cgFrame.height)
+
+        let oldVF = oldScreen.visibleFrame
+        let fracW = min(currentAppKitFrame.width / oldVF.width, 1)
+        let fracH = min(currentAppKitFrame.height / oldVF.height, 1)
+        let fracX = max(min((currentAppKitFrame.minX - oldVF.minX) / oldVF.width, 1 - fracW), 0)
+        let fracY = max(min((currentAppKitFrame.minY - oldVF.minY) / oldVF.height, 1 - fracH), 0)
+
+        let newVF = newScreen.visibleFrame
+        let newFrame = CGRect(x: newVF.minX + fracX * newVF.width, y: newVF.minY + fracY * newVF.height,
+                               width: fracW * newVF.width, height: fracH * newVF.height)
+        apply(frame: newFrame, to: axWindow, screen: newScreen)
+        return (newFrame, newScreen)
+    }
+
     private func apply(frame: CGRect, to axWindow: AXUIElement, screen: NSScreen) {
         // Convert AppKit frame (bottom-left origin) → CG coords (top-left origin)
         let screenFrame = screen.frame
         let cgFrame = CGRect(x: frame.minX, y: screenFrame.maxY - frame.maxY, width: frame.width, height: frame.height)
-        WindowManagerService.setAXFrame(cgFrame, of: axWindow)
+        let previous = WindowManagerService.axFrame(of: axWindow)
+        let applied = WindowManagerService.setAXFrame(cgFrame, of: axWindow)
+        if let previous {
+            WindowSnapUndo.shared.record(axWindow: axWindow, previous: previous, applied: applied)
+        }
     }
 }

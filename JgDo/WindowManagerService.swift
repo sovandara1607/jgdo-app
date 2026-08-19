@@ -44,10 +44,24 @@ final class WindowManagerService {
                 windowTitle: title.isEmpty ? appName : title,
                 pid: pid,
                 icon: icon,
-                bounds: bounds
+                bounds: bounds,
+                screenLabel: Self.screenLabel(forCGBounds: bounds)
             ))
         }
         return result
+    }
+
+    /// Which display a window (given in CG global coords) is mostly on, as a
+    /// human name — nil when only one screen is connected, since labeling
+    /// every row "Built-in Display" everywhere it's the only option is just
+    /// noise. Best-effort: macOS Spaces aren't distinctly enumerable via any
+    /// public API, so this only ever reports the display, not the Space.
+    static func screenLabel(forCGBounds bounds: CGRect) -> String? {
+        guard NSScreen.screens.count > 1 else { return nil }
+        let mainH = NSScreen.screens.first?.frame.height ?? 0
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let appKitPoint = CGPoint(x: center.x, y: mainH - center.y)
+        return NSScreen.screens.first { $0.frame.contains(appKitPoint) }?.localizedName
     }
 
     struct WindowBounds {
@@ -106,6 +120,24 @@ final class WindowManagerService {
         AXUIElementSetAttributeValue(axWin, kAXMinimizedAttribute as CFString, true as CFTypeRef)
     }
 
+    /// Un-minimizes a window found by app + title match — used to restore a
+    /// parked/grouped window. `findAXWindow` matches on title among the
+    /// app's windows, which still works while minimized (AX keeps minimized
+    /// windows in `kAXWindowsAttribute`, just flagged).
+    func unminimizeWindow(bundlePID pid: pid_t, title: String) {
+        let axApp = AXUIElementCreateApplication(pid)
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &ref) == .success,
+              let axWindows = ref as? [AXUIElement] else { return }
+        let match = axWindows.first { axWin in
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef)
+            return (titleRef as? String) == title
+        } ?? axWindows.first
+        guard let axWin = match else { return }
+        AXUIElementSetAttributeValue(axWin, kAXMinimizedAttribute as CFString, false as CFTypeRef)
+    }
+
     func closeWindow(_ window: WindowInfo) {
         guard let axWin = findAXWindow(for: window) else { return }
         var ref: CFTypeRef?
@@ -116,6 +148,15 @@ final class WindowManagerService {
 
     func hideApp(_ window: WindowInfo) {
         NSRunningApplication(processIdentifier: window.pid)?.hide()
+    }
+
+    /// Quits an app by pid — a polite terminate (lets the app run its own
+    /// save-and-quit / "are you sure" flow), same mechanism `AppDelegate`
+    /// uses to quit JgDo itself, just aimed at a different process. Used by
+    /// the Command Palette's `>quit` quick action.
+    @discardableResult
+    func quitApp(pid: pid_t) -> Bool {
+        NSRunningApplication(processIdentifier: pid)?.terminate() ?? false
     }
 
     // MARK: Permissions

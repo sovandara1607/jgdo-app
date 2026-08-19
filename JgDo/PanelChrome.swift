@@ -20,14 +20,14 @@ struct PanelCard: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(.ultraThinMaterial)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(PanelTheme.border, lineWidth: 0.5)
             )
-            .shadow(color: .black.opacity(0.30), radius: 28, y: 12)
+            .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
     }
 }
 
@@ -46,28 +46,28 @@ struct PanelSearchField: View {
     @FocusState.Binding var focused: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.secondary)
             ZStack(alignment: .leading) {
                 if text.isEmpty {
                     Text(placeholder)
-                        .font(.system(size: 15))
+                        .font(.system(size: 13))
                         .foregroundStyle(.tertiary)
                         .allowsHitTesting(false)
                 }
                 TextField("", text: $text)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 15))
+                    .font(.system(size: 13))
                     .focused($focused)
             }
             Spacer()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(PanelTheme.fieldFill)
         )
         .contentShape(Rectangle())
@@ -85,11 +85,11 @@ struct KeyHint: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(key)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 5).padding(.vertical, 2)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 4).padding(.vertical, 2)
                 .background(RoundedRectangle(cornerRadius: 4).fill(PanelTheme.chipFill))
             Text(label)
-                .font(.system(size: 10))
+                .font(.system(size: 9))
                 .foregroundStyle(.secondary)
         }
     }
@@ -199,7 +199,11 @@ final class FloatingNoticeCenter {
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // Native window shadow OFF — SwiftUI's own `.panelCard()` shadow is
+        // the only one now. Having both caused a jagged double-shadow seam
+        // at the rounded corners during the alpha fade-in (the native shadow
+        // rasterizes against stale corner geometry mid-animation).
+        panel.hasShadow = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentViewController = hosting
 

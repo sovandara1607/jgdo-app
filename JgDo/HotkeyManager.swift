@@ -12,6 +12,17 @@ final class HotkeyManager {
     nonisolated(unsafe) var onCommandPalette: (() -> Void)?
     nonisolated(unsafe) var onShrinkWindow: (() -> Void)?
     nonisolated(unsafe) var onGrowWindow: (() -> Void)?
+    nonisolated(unsafe) var onUndoSnap: (() -> Void)?
+    nonisolated(unsafe) var onToggleAlwaysOnTop: (() -> Void)?
+    nonisolated(unsafe) var onMoveToNextDisplay: (() -> Void)?
+    nonisolated(unsafe) var onMoveToPreviousDisplay: (() -> Void)?
+    nonisolated(unsafe) var onToggleFocusMode: (() -> Void)?
+    nonisolated(unsafe) var onShowCheatSheet: (() -> Void)?
+    nonisolated(unsafe) var onToggleScratchpad: (() -> Void)?
+    nonisolated(unsafe) var onParkFrontmostWindow: (() -> Void)?
+    nonisolated(unsafe) var onRestoreAllParked: (() -> Void)?
+    nonisolated(unsafe) var onCreateSnapGroup: (() -> Void)?
+    nonisolated(unsafe) var onOrganizeWorkspace: (() -> Void)?
 
     nonisolated(unsafe) private var tap: CFMachPort?
     nonisolated(unsafe) private var tapSource: CFRunLoopSource?
@@ -123,6 +134,28 @@ final class HotkeyManager {
             let cb = onShrinkWindow; action = { cb?() }
         case .growWindow:
             let cb = onGrowWindow; action = { cb?() }
+        case .undoSnap:
+            let cb = onUndoSnap; action = { cb?() }
+        case .toggleAlwaysOnTop:
+            let cb = onToggleAlwaysOnTop; action = { cb?() }
+        case .moveToNextDisplay:
+            let cb = onMoveToNextDisplay; action = { cb?() }
+        case .moveToPreviousDisplay:
+            let cb = onMoveToPreviousDisplay; action = { cb?() }
+        case .toggleFocusMode:
+            let cb = onToggleFocusMode; action = { cb?() }
+        case .showCheatSheet:
+            let cb = onShowCheatSheet; action = { cb?() }
+        case .toggleScratchpad:
+            let cb = onToggleScratchpad; action = { cb?() }
+        case .parkFrontmostWindow:
+            let cb = onParkFrontmostWindow; action = { cb?() }
+        case .restoreAllParked:
+            let cb = onRestoreAllParked; action = { cb?() }
+        case .createSnapGroup:
+            let cb = onCreateSnapGroup; action = { cb?() }
+        case .organizeWorkspace:
+            let cb = onOrganizeWorkspace; action = { cb?() }
         default:
             guard let layout = match.action.layout else {
                 return Unmanaged.passRetained(event)

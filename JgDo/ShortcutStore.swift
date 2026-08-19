@@ -78,6 +78,16 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
     case snapTopLeft, snapTopRight, snapBottomLeft, snapBottomRight
     case snapMaximize, snapCenter
     case shrinkWindow, growWindow
+    case undoSnap
+    case toggleAlwaysOnTop
+    case moveToNextDisplay, moveToPreviousDisplay
+    case toggleFocusMode
+    case showCheatSheet
+    case toggleScratchpad
+    case parkFrontmostWindow
+    case restoreAllParked
+    case createSnapGroup
+    case organizeWorkspace
 
     var id: String { rawValue }
 
@@ -104,6 +114,17 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
         case .commandPalette:   return "Open command palette"
         case .shrinkWindow:     return "Shrink window"
         case .growWindow:       return "Grow window"
+        case .undoSnap:         return "Undo last snap/move"
+        case .toggleAlwaysOnTop: return "Toggle Always on Top"
+        case .moveToNextDisplay:     return "Move window to next display"
+        case .moveToPreviousDisplay: return "Move window to previous display"
+        case .toggleFocusMode:       return "Toggle Focus Mode"
+        case .showCheatSheet:        return "Show shortcuts cheat sheet"
+        case .toggleScratchpad:      return "Open scratchpad"
+        case .parkFrontmostWindow:   return "Park frontmost window"
+        case .restoreAllParked:      return "Restore all parked windows"
+        case .createSnapGroup:       return "Create Snap Group from current windows"
+        case .organizeWorkspace:     return "Organize Workspace…"
         default:                return layout?.rawValue ?? rawValue
         }
     }
@@ -124,6 +145,32 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
         .snapBottomRight:  KeyCombo(keyCode: 40, option: true, control: true),  // ⌃⌥K
         .snapMaximize:     KeyCombo(keyCode: 36, option: true, control: true),  // ⌃⌥↩
         .snapCenter:       KeyCombo(keyCode: 8, option: true, control: true),   // ⌃⌥C
+        .undoSnap:         KeyCombo(keyCode: 6, option: true, control: true),   // ⌃⌥Z
+        .toggleAlwaysOnTop: KeyCombo(keyCode: 17, option: true, control: true), // ⌃⌥T
+        .moveToNextDisplay:     KeyCombo(keyCode: 30, option: true, control: true, shift: true), // ⌃⌥⇧]
+        .moveToPreviousDisplay: KeyCombo(keyCode: 33, option: true, control: true, shift: true), // ⌃⌥⇧[
+        .toggleFocusMode:       KeyCombo(keyCode: 3, option: true, control: true),                // ⌃⌥F
+        .showCheatSheet:        KeyCombo(keyCode: 44, option: true, control: true),                // ⌃⌥/
+        .toggleScratchpad:      KeyCombo(keyCode: 45, option: true, control: true),                // ⌃⌥N
+        .parkFrontmostWindow:   KeyCombo(keyCode: 35, option: true, control: true),                // ⌃⌥P
+        .restoreAllParked:      KeyCombo(keyCode: 35, option: true, control: true, shift: true),   // ⌃⌥⇧P
+        .createSnapGroup:       KeyCombo(keyCode: 5,  option: true, control: true),                // ⌃⌥G
+        .organizeWorkspace:     KeyCombo(keyCode: 31, option: true, control: true),                // ⌃⌥O
+    ]
+
+    /// Shared grouping used by both the Settings → Shortcuts list and the
+    /// cheat-sheet overlay, so the two never drift out of sync.
+    static let categories: [(title: String, actions: [HotkeyAction])] = [
+        ("Global", [.toggleSwitcher, .clipboardHistory, .commandPalette, .showCheatSheet, .toggleScratchpad]),
+        ("Window Snapping", HotkeyAction.allCases.filter { $0.layout != nil }),
+        ("Resize Steps", [.shrinkWindow, .growWindow]),
+        ("Undo", [.undoSnap]),
+        ("Always on Top", [.toggleAlwaysOnTop]),
+        ("Displays", [.moveToNextDisplay, .moveToPreviousDisplay]),
+        ("Focus Mode", [.toggleFocusMode]),
+        ("Window Parking", [.parkFrontmostWindow, .restoreAllParked]),
+        ("Snap Groups", [.createSnapGroup]),
+        ("Organize Workspace", [.organizeWorkspace]),
     ]
 }
 

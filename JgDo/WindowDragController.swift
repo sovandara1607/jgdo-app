@@ -439,6 +439,7 @@ final class WindowDragController {
         guard let s = session, commandHeld, s.mode == .move, let target = s.lastAvailableRect,
               let (screen, _) = screenAndBounds(forCGPoint: point) else { return }
         fireHaptic()
+        WindowSnapUndo.shared.record(axWindow: s.axWindow, previous: s.originalFrame, applied: target)
         animateSnap(of: s.axWindow, pid: s.pid, from: s.lastLiveFrame, to: target, on: screen)
     }
 

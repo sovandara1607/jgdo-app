@@ -16,7 +16,7 @@ struct SwitcherHUD: View {
 
     var body: some View {
         @Bindable var s = state
-        VStack(spacing: 12) {
+        VStack(spacing: 9) {
             // Navigation keys (↑↓/Return/Esc) are handled by the AppDelegate's
             // local key monitor; the field only handles typing.
             PanelSearchField(icon: "magnifyingglass",
@@ -26,8 +26,8 @@ struct SwitcherHUD: View {
             list
             footer
         }
-        .padding(16)
-        .frame(width: 460)
+        .padding(12)
+        .frame(width: 360)
         .panelCard()
         .onChange(of: state.focusSearch) { _, v in
             if v { searchFocused = true; state.focusSearch = false }
@@ -44,13 +44,13 @@ struct SwitcherHUD: View {
     }
 
     private var list: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 3) {
             if rows.isEmpty {
                 Text("No matching apps")
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 18)
+                    .padding(.vertical, 14)
             } else {
                 ForEach(rows, id: \.app.processIdentifier) { item in
                     row(item.app, selected: item.index == state.selectedIndex)
@@ -64,31 +64,31 @@ struct SwitcherHUD: View {
     private func row(_ app: NSRunningApplication, selected: Bool) -> some View {
         let fill: Color = selected ? PanelTheme.selectedFill : Color.clear
         let stroke: Color = selected ? PanelTheme.selectedStroke : Color.clear
-        return HStack(spacing: 11) {
+        return HStack(spacing: 9) {
             if let icon = app.icon {
                 Image(nsImage: icon)
                     .resizable()
-                    .frame(width: 30, height: 30)
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .frame(width: 24, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             Text(app.localizedName ?? "—")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
             Spacer(minLength: 0)
             if selected {
                 Image(systemName: "return")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous).fill(fill)
+            RoundedRectangle(cornerRadius: 9, style: .continuous).fill(fill)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .strokeBorder(stroke, lineWidth: 1.5)
         )
     }
@@ -96,7 +96,7 @@ struct SwitcherHUD: View {
     // MARK: Footer hint
 
     private var footer: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             KeyHint(key: "↑↓", label: "Navigate")
             KeyHint(key: "↩", label: "Snap side by side")
             KeyHint(key: "esc", label: "Close")
@@ -115,18 +115,6 @@ private enum Theme {
     static let divider    = Color.primary.opacity(0.08)
     static let cardFill   = Color.primary.opacity(0.04)
     static let cardStroke = Color.primary.opacity(0.08)
-}
-
-/// Fixed per-metric colors for the dashboard's quick-glance cards and
-/// sparklines — distinct hues so CPU/Memory/Disk/Battery read apart at a
-/// glance, independent of the user's system accent color (used elsewhere for
-/// single-metric detail views).
-private enum MetricColor {
-    static let cpu     = Color.orange
-    static let memory  = Color.blue
-    static let disk    = Color.purple
-    static let battery = Color.yellow
-    static let network = Color.cyan
 }
 
 // MARK: - System Status popover root (native sidebar + list, à la System Settings)
@@ -155,15 +143,18 @@ private enum PopoverTab: String, CaseIterable, Identifiable, Hashable {
 
 struct StatusPopoverView: View {
     @State private var monitor = SystemMonitor.shared
+    @State private var focus = FocusModeService.shared
+    @State private var storage = StorageBreakdownService.shared
+    @State private var showStorageBreakdown = false
     @AppStorage(AppSettings.edgeGapKey) private var edgeGap: Double = 8
     @AppStorage(AppSettings.cleaningDurationKey) private var cleaningDuration: Int = 60
     @AppStorage("popoverTab") private var tab: PopoverTab = .overview
     @Environment(\.dismissPopover) private var dismissPopover
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 9) {
             iconToolbar
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 sectionHeader
                 ScrollView {
                     card
@@ -171,8 +162,8 @@ struct StatusPopoverView: View {
             }
             footer
         }
-        .padding(14)
-        .frame(width: 340, height: 520)
+        .padding(11)
+        .frame(width: 288, height: 400)
         .background(.regularMaterial)
     }
 
@@ -183,18 +174,18 @@ struct StatusPopoverView: View {
             ForEach(PopoverTab.allCases) { t in
                 Button(action: { withAnimation(.spring(duration: 0.2)) { tab = t } }) {
                     Image(systemName: t.icon)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(tab == t ? .white : .secondary)
-                        .frame(width: 32, height: 28)
+                        .frame(width: 28, height: 24)
                         .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(tab == t ? Color.accentColor : Color.clear)
                         )
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(5)
+        .padding(4)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Theme.cardFill)
@@ -233,35 +224,37 @@ struct StatusPopoverView: View {
         VStack(spacing: 0) {
             switch tab {
             case .overview:
-                statGrid
+                ringGrid
+                rowDivider
+                quickActionsRow
                 rowDivider
                 Text("HARDWARE USAGE")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                     .tracking(0.5)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 10)
-                    .padding(.bottom, 2)
+                    .padding(.horizontal, 11)
+                    .padding(.top, 8)
+                    .padding(.bottom, 1)
                 sparkMetricRow(icon: "cpu", label: "CPU",
                                 percent: monitor.status.cpuPercent / 100,
-                                color: MetricColor.cpu, history: monitor.cpuHistory)
+                                color: Theme.accent, history: monitor.cpuHistory)
                 rowDivider
                 sparkMetricRow(icon: "memorychip", label: "Memory",
                                 percent: monitor.status.memPercent,
-                                color: MetricColor.memory, history: monitor.memHistory)
+                                color: Theme.accent, history: monitor.memHistory)
                 rowDivider
                 sparkMetricRow(icon: "internaldrive", label: "Disk",
                                 percent: monitor.status.diskPercent,
-                                color: MetricColor.disk, history: monitor.diskHistory)
+                                color: Theme.accent, history: monitor.diskHistory)
                 if monitor.status.hasBattery {
                     rowDivider
                     batteryRow(monitor.status)
                 }
                 rowDivider
                 MonitorControlsTile()
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
                 rowDivider
                 cleaningRow
             case .system:
@@ -274,6 +267,12 @@ struct StatusPopoverView: View {
                 networkTile(monitor.status).cardRowPadding()
             case .productivity:
                 WorkspacesTile().cardRowPadding()
+                rowDivider
+                LayoutPresetsTile().cardRowPadding()
+                rowDivider
+                ParkedWindowsTile().cardRowPadding()
+                rowDivider
+                SnapGroupsTile().cardRowPadding()
                 rowDivider
                 InsightsTile().cardRowPadding()
                 rowDivider
@@ -293,98 +292,139 @@ struct StatusPopoverView: View {
             .padding(.horizontal, 14)
     }
 
-    // MARK: Overview — quick-stat mini cards
+    // MARK: Overview — quick-stat ring gauges
 
-    private var statGrid: some View {
-        HStack(spacing: 8) {
-            statMini(icon: "cpu", label: "CPU",
-                     value: String(format: "%.0f%%", monitor.status.cpuPercent), color: MetricColor.cpu)
-            statMini(icon: "memorychip", label: "Memory",
-                     value: String(format: "%.0f%%", monitor.status.memPercent * 100), color: MetricColor.memory)
-            statMini(icon: "internaldrive", label: "Disk",
-                     value: String(format: "%.0f%%", monitor.status.diskPercent * 100), color: MetricColor.disk)
+    private var ringGrid: some View {
+        HStack(spacing: 0) {
+            ringGauge(label: "CPU", percent: monitor.status.cpuPercent / 100, color: Theme.accent)
+            ringGauge(label: "Memory", percent: monitor.status.memPercent, color: Theme.accent)
+            ringGauge(label: "Disk", percent: monitor.status.diskPercent, color: Theme.accent)
         }
-        .padding(12)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 12)
     }
 
-    private func statMini(icon: String, label: String, value: String, color: Color) -> some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(color)
-                Text(label)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+    private func ringGauge(label: String, percent: Double, color: Color) -> some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .stroke(Theme.track, lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: min(max(percent, 0), 1))
+                    .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.45), value: percent)
+                Text(String(format: "%.0f", percent * 100))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
             }
-            Text(value)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.primary)
+            .frame(width: 48, height: 48)
+            Text(label.uppercased())
+                .font(.system(size: 8.5, weight: .semibold))
+                .tracking(0.3)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-        )
+    }
+
+    // MARK: Overview — quick actions row
+
+    private var quickActionsRow: some View {
+        HStack(spacing: 8) {
+            quickActionButton(icon: "rectangle.stack", label: "Focus",
+                               active: focus.isActive) {
+                focus.toggle()
+            }
+            quickActionButton(icon: "eye.slash", label: "Park") {
+                AppDelegate.shared?.parkFrontmostWindow()
+            }
+            quickActionButton(icon: "square.grid.2x2", label: "Organize") {
+                dismissPopover()
+                AppDelegate.shared?.toggleOrganizeWorkspace()
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+    }
+
+    private func quickActionButton(icon: String, label: String, active: Bool = false,
+                                    action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(active ? .white : .primary)
+                Text(label)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(active ? .white : .secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(active ? Theme.accent : Color.primary.opacity(0.05))
+            )
+        }
+        .buttonStyle(.plain)
+        .help(label)
     }
 
     // MARK: Overview — bar + sparkline row
 
     private func sparkMetricRow(icon: String, label: String, percent: Double, color: Color, history: [Double]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
                 Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(color)
-                    .frame(width: 16)
+                    .frame(width: 14)
                 Text(label)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Spacer()
                 Text(String(format: "%.0f%%", percent * 100))
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
             ColoredBar(progress: percent, color: color)
             Sparkline(values: history, color: color)
-                .frame(height: 22)
+                .frame(height: 18)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
     }
 
     private func batteryRow(_ s: SystemStatus) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
                 Image(systemName: s.isCharging ? "bolt.fill" : "battery.75")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MetricColor.battery)
-                    .frame(width: 16)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 14)
                 Text("Battery")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Spacer()
                 Text("\(s.batteryPercent)%")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            ColoredBar(progress: Double(s.batteryPercent) / 100, color: MetricColor.battery)
+            ColoredBar(progress: Double(s.batteryPercent) / 100, color: Theme.accent)
             HStack(spacing: 6) {
                 Text(s.isCharging ? "Charging" : "On battery")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
                 Spacer()
                 if s.batteryMinutesRemain > 0 {
                     let h = s.batteryMinutesRemain / 60, m = s.batteryMinutesRemain % 60
                     Text(h > 0 ? "~\(h)h \(m)m left" : "~\(m)m left")
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.tertiary)
                 }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
     }
 
     private var cleaningRow: some View {
@@ -396,28 +436,28 @@ struct StatusPopoverView: View {
                 CleaningModeController.shared.start(duration: max(duration, 15))
             }
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: "bubbles.and.sparkles")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                    .frame(width: 14)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Keyboard Cleaning")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.primary)
                     Text("Locks the keyboard so you can wipe it down")
-                        .font(.system(size: 10))
+                        .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
     }
 
     // MARK: Window gap setting
@@ -489,11 +529,71 @@ struct StatusPopoverView: View {
         MetricTile(icon: "internaldrive", title: "Storage",
                    value: "\(s.diskUsed.asGB) / \(s.diskTotal.asGB)",
                    progress: s.diskPercent) {
-            HStack(spacing: 16) {
-                ioStat(icon: "arrow.down", label: "Read", value: s.diskReadSpeed.asSpeed())
-                ioStat(icon: "arrow.up", label: "Write", value: s.diskWriteSpeed.asSpeed())
-                Spacer()
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 16) {
+                    ioStat(icon: "arrow.down", label: "Read", value: s.diskReadSpeed.asSpeed())
+                    ioStat(icon: "arrow.up", label: "Write", value: s.diskWriteSpeed.asSpeed())
+                    Spacer()
+                    Button {
+                        withAnimation(.spring(duration: 0.25)) { showStorageBreakdown.toggle() }
+                        if showStorageBreakdown && storage.categories.isEmpty { storage.scan() }
+                    } label: {
+                        Image(systemName: showStorageBreakdown ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("What's using space")
+                }
+                if showStorageBreakdown {
+                    storageBreakdownList
+                }
             }
+        }
+    }
+
+    private var storageBreakdownList: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if storage.isScanning {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning…").font(.system(size: 9.5)).foregroundStyle(.tertiary)
+                }
+                .padding(.top, 2)
+            } else if storage.categories.isEmpty {
+                Text("Tap to scan common folders (Applications, Documents, Downloads, Pictures, Movies, Music).")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                let maxSize = storage.categories.map(\.sizeBytes).max() ?? 1
+                ForEach(storage.categories) { category in
+                    storageRow(category, maxSize: maxSize)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func storageRow(_ category: StorageCategory, maxSize: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(category.name)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(UInt64(category.sizeBytes).asGB)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.track)
+                    Capsule().fill(Theme.accent)
+                        .frame(width: max(geo.size.width * CGFloat(category.sizeBytes) / CGFloat(max(maxSize, 1)), 2))
+                }
+            }
+            .frame(height: 4)
         }
     }
 
@@ -513,12 +613,41 @@ struct StatusPopoverView: View {
     // MARK: Network tile
 
     private func networkTile(_ s: SystemStatus) -> some View {
-        HStack(spacing: 0) {
-            netColumn(icon: "arrow.down", label: "DOWNLOAD", value: s.netDownSpeed.asSpeed())
-            Rectangle().fill(Theme.divider).frame(width: 1, height: 26)
-            netColumn(icon: "arrow.up", label: "UPLOAD", value: s.netUpSpeed.asSpeed())
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 0) {
+                netColumn(icon: "arrow.down", label: "DOWNLOAD", value: s.netDownSpeed.asSpeed())
+                Rectangle().fill(Theme.divider).frame(width: 1, height: 26)
+                netColumn(icon: "arrow.up", label: "UPLOAD", value: s.netUpSpeed.asSpeed())
+            }
+            if !s.netInterfaces.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(s.netInterfaces) { iface in
+                        interfaceRow(iface)
+                    }
+                }
+            }
         }
         .padding(.vertical, 5)
+    }
+
+    private func interfaceRow(_ iface: NetworkInterfaceStat) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: iface.displayName.localizedCaseInsensitiveContains("wi-fi") ? "wifi" : "cable.connector")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .frame(width: 12)
+            Text(iface.displayName)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            Text("↓\(iface.downSpeed.asSpeed())")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            Text("↑\(iface.upSpeed.asSpeed())")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.tertiary)
+        }
     }
 
     private func netColumn(icon: String, label: String, value: String) -> some View {
@@ -563,13 +692,13 @@ struct StatusPopoverView: View {
     // MARK: Footer — uptime strip + full-width pill action buttons
 
     private var footer: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             HStack(spacing: 8) {
                 InfoChip(icon: "clock", text: uptimeString)
                 InfoChip(icon: "apple.logo", text: osVersion)
                 Spacer()
             }
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 pillButton(icon: "gearshape", label: "Settings") {
                     dismissPopover()
                     SettingsWindow.show()
@@ -584,18 +713,18 @@ struct StatusPopoverView: View {
 
     private func pillButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 11, weight: .medium))
-                Text(label).font(.system(size: 11.5, weight: .medium))
+            HStack(spacing: 5) {
+                Image(systemName: icon).font(.system(size: 10, weight: .medium))
+                Text(label).font(.system(size: 10.5, weight: .medium))
             }
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.cardFill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.cardStroke, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Theme.cardStroke, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -627,18 +756,18 @@ struct MetricTile<Detail: View>: View {
     @ViewBuilder let detail: () -> Detail
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
                 Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                    .frame(width: 14)
                 Text(title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.primary)
                 Spacer()
                 Text(value)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
@@ -647,7 +776,7 @@ struct MetricTile<Detail: View>: View {
             }
             detail()
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
     }
 }
 
@@ -717,7 +846,7 @@ struct Sparkline: View {
 /// pre-existing detail tiles rather than the Overview tab's custom rows).
 extension View {
     func cardRowPadding() -> some View {
-        self.padding(.horizontal, 14).padding(.vertical, 9)
+        self.padding(.horizontal, 11).padding(.vertical, 7)
     }
 }
 

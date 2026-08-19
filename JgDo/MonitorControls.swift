@@ -153,6 +153,11 @@ final class MonitorControlService {
 /// "Display & Sound" tile shown in the status popover.
 struct MonitorControlsTile: View {
     @State private var service = MonitorControlService.shared
+    /// Keeps the sliders live while the tile is on screen — mirrors what
+    /// pressing the native brightness/volume keys does to Control Center,
+    /// so nudging a hardware key updates this tile immediately instead of
+    /// only on next popover open.
+    @State private var pollTimer: Timer?
 
     var body: some View {
         if service.volumeAvailable || service.brightnessAvailable {
@@ -185,7 +190,16 @@ struct MonitorControlsTile: View {
                     }
                 }
             }
-            .onAppear { service.refresh() }
+            .onAppear {
+                service.refresh()
+                pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+                    service.refresh()
+                }
+            }
+            .onDisappear {
+                pollTimer?.invalidate()
+                pollTimer = nil
+            }
         }
     }
 

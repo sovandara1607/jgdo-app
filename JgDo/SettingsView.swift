@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 import Sparkle
+import UniformTypeIdentifiers
 
 // MARK: - Window plumbing
 
@@ -63,7 +64,14 @@ struct GeneralSettingsView: View {
     @AppStorage(AppSettings.dragSnapEnabledKey) private var dragSnapEnabled = true
     @AppStorage(AppSettings.adjacentResizeEnabledKey) private var adjacentResizeEnabled = true
     @AppStorage(AppSettings.showPerCoreCPUKey) private var showPerCoreCPU = false
+    @AppStorage(AppSettings.menuBarStatKey) private var menuBarStat = MenuBarStat.off.rawValue
+    @AppStorage(AppSettings.lowBatteryEnabledKey) private var lowBatteryEnabled = true
+    @AppStorage(AppSettings.lowBatteryThresholdKey) private var lowBatteryThreshold = 20
     @State private var updateService = UpdateService.shared
+    @State private var exportDoc: SettingsBackupDocument?
+    @State private var showExporter = false
+    @State private var showImporter = false
+    @State private var importError: String?
 
     var body: some View {
         Form {
@@ -104,6 +112,75 @@ struct GeneralSettingsView: View {
             Section("Status Popover") {
                 Toggle("Show per-core CPU usage", isOn: $showPerCoreCPU)
                 Text("When enabled, the status popover displays individual CPU core utilization. Disabled by default to reduce background CPU usage.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Menu Bar") {
+                Picker("Live stat", selection: $menuBarStat) {
+                    ForEach(MenuBarStat.allCases) { stat in
+                        Text(stat.label).tag(stat.rawValue)
+                    }
+                }
+                .onChange(of: menuBarStat) { _, _ in AppDelegate.shared?.applyMenuBarStatSetting() }
+                Text("Shows a live reading next to the menu bar icon. Off by default to reduce background CPU usage — sampling only runs while this or the popover is open.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text("Right-click the menu bar icon for a quick panel — volume/brightness sliders, Focus Mode, Keyboard Cleaning, Always on Top, and your last workspace — without opening the full popover. A small colored dot on the icon shows when Focus Mode, Cleaning, or a pin is active. Scroll over the icon to nudge system volume; hold ⌥ while scrolling for brightness.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Battery") {
+                Toggle("Alert when battery is low", isOn: $lowBatteryEnabled)
+                    .onChange(of: lowBatteryEnabled) { _, on in
+                        if on { BatteryAlertService.shared.start() } else { BatteryAlertService.shared.stop() }
+                    }
+                LabeledContent("Threshold") {
+                    HStack(spacing: 10) {
+                        Slider(value: Binding(
+                            get: { Double(lowBatteryThreshold) },
+                            set: { lowBatteryThreshold = Int($0) }
+                        ), in: Double(AppSettings.lowBatteryThresholdRange.lowerBound)...Double(AppSettings.lowBatteryThresholdRange.upperBound), step: 5)
+                            .frame(width: 200)
+                            .disabled(!lowBatteryEnabled)
+                        Text("\(lowBatteryThreshold)%")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .trailing)
+                    }
+                }
+                Text("Fires once when battery drops below this level while unplugged — works even with no JgDo window open.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Backup") {
+                Button("Export Settings…") {
+                    exportDoc = SettingsBackupDocument(backup: SettingsBackup.current())
+                    showExporter = true
+                }
+                Button("Import Settings…") { showImporter = true }
+                Text("Shortcuts and preferences only — not clipboard history, workspaces, or license state.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Window Memory") {
+                let remembered = WindowMemoryService.shared.rememberedApps
+                if remembered.isEmpty {
+                    Text("No apps remembered yet. Right-click the menu bar icon → \"Remember Window Position\" while an app is frontmost to start.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(remembered, id: \.bundleID) { entry in
+                        LabeledContent(entry.name) {
+                            Button("Forget") { WindowMemoryService.shared.forget(bundleID: entry.bundleID) }
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                Text("Reapplies a remembered app's last window frame automatically the next time that app launches (not on every switch back).")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -178,6 +255,25 @@ struct GeneralSettingsView: View {
         .formStyle(.grouped)
         // Reflect changes made directly in System Settings while we were closed.
         .onAppear { launchAtLogin = SMAppService.mainApp.status == .enabled }
+        .fileExporter(isPresented: $showExporter, document: exportDoc,
+                      contentType: .json, defaultFilename: "JgDo Settings") { _ in }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+            guard case .success(let url) = result else { return }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url),
+                  let backup = try? JSONDecoder().decode(SettingsBackup.self, from: data)
+            else { importError = "Couldn't read that file."; return }
+            backup.apply()
+        }
+        .alert("Import Failed", isPresented: Binding(
+            get: { importError != nil },
+            set: { if !$0 { importError = nil } }
+        )) {
+            Button("OK") { importError = nil }
+        } message: {
+            Text(importError ?? "")
+        }
     }
 }
 
@@ -189,11 +285,19 @@ struct ShortcutsSettingsView: View {
     @State private var eventMonitor: Any?
     @State private var notice: String?
 
-    private let globalActions: [HotkeyAction] = [.toggleSwitcher, .clipboardHistory, .commandPalette]
+    private let globalActions: [HotkeyAction] = [.toggleSwitcher, .clipboardHistory, .commandPalette,
+                                                  .showCheatSheet, .toggleScratchpad]
     private var snapActions: [HotkeyAction] {
         HotkeyAction.allCases.filter { $0.layout != nil }
     }
     private let resizeStepActions: [HotkeyAction] = [.shrinkWindow, .growWindow]
+    private let undoActions: [HotkeyAction] = [.undoSnap]
+    private let pinActions: [HotkeyAction] = [.toggleAlwaysOnTop]
+    private let displayActions: [HotkeyAction] = [.moveToNextDisplay, .moveToPreviousDisplay]
+    private let focusActions: [HotkeyAction] = [.toggleFocusMode]
+    private let parkActions: [HotkeyAction] = [.parkFrontmostWindow, .restoreAllParked]
+    private let groupActions: [HotkeyAction] = [.createSnapGroup]
+    private let organizeActions: [HotkeyAction] = [.organizeWorkspace]
 
     var body: some View {
         Form {
@@ -206,6 +310,48 @@ struct ShortcutsSettingsView: View {
             Section("Resize Steps") {
                 ForEach(resizeStepActions) { row($0) }
                 Text("Steps the focused window between preset sizes (90/70/50/30% of the screen), centered on the screen.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Undo") {
+                ForEach(undoActions) { row($0) }
+                Text("Restores the last window's frame from right before a JgDo snap/resize/drag-to-snap — only if nothing has moved it since.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Always on Top") {
+                ForEach(pinActions) { row($0) }
+                Text("Pins the focused window above all others until toggled off or the window closes.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Displays") {
+                ForEach(displayActions) { row($0) }
+                Text("Sends the focused window to the adjacent display, keeping its relative position/size.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Focus Mode") {
+                ForEach(focusActions) { row($0) }
+                Text("Hides every other app's windows, leaving only the frontmost app visible. Toggle again to restore them.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Window Parking") {
+                ForEach(parkActions) { row($0) }
+                Text("Removes a window from the workspace while remembering exactly where it was — restore it later from the popover's Parked Windows list.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Snap Groups") {
+                ForEach(groupActions) { row($0) }
+                Text("Captures the current windows as a named group you can move, resize, minimize, or close together — manage from the popover's Snap Groups list.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Organize Workspace") {
+                ForEach(organizeActions) { row($0) }
+                Text("Previews a cleaner arrangement of the current windows before applying — Balanced, Focus, Columns, Rows, or Main + Stack. ⌃⌥Z undoes the last Organize as one step.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

@@ -1,3 +1,4 @@
+
 // JgDo/UpdateService.swift
 // Sparkle auto-update service wrapper
 
@@ -115,3 +116,4 @@ final class UpdateService {
         updater.resetUpdateCycle()
     }
 }
+

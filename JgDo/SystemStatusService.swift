@@ -3,6 +3,19 @@ import AppKit
 import Darwin
 import IOKit
 import IOKit.ps
+import SystemConfiguration
+
+/// One network interface's current throughput, for the Network detail tab —
+/// the aggregate `netDownSpeed`/`netUpSpeed` above stays for the compact
+/// Overview row.
+struct NetworkInterfaceStat: Identifiable {
+    var id: String { bsdName }
+    let bsdName: String       // "en0"
+    let displayName: String   // "Wi-Fi", from SystemConfiguration — falls
+                               // back to the BSD name if unavailable
+    var downSpeed: Double = 0
+    var upSpeed: Double = 0
+}
 
 // MARK: - Data model
 
@@ -34,6 +47,7 @@ struct SystemStatus {
     // Network
     var netDownSpeed: Double = 0     // bytes/s
     var netUpSpeed:   Double = 0     // bytes/s
+    var netInterfaces: [NetworkInterfaceStat] = []
 
     // Battery
     var batteryPercent:        Int  = 0
@@ -65,6 +79,13 @@ final class SystemMonitor {
     private var timer: Timer?
     private let fetcher = SystemStatusFetcher()
     private var isPopoverVisible = false
+    /// True while the menu bar's optional live-stat label is enabled — a
+    /// second, independent reason to keep sampling even with the popover
+    /// closed (see `reconcileRunning`).
+    private var isMenuBarStatVisible = false
+    /// True while the menu bar's right-click quick panel (battery/network
+    /// rows) is open — a third, independent reason.
+    private var isQuickPanelVisible = false
     // Serial queue: keeps the fetcher's delta state (prevCPU/prevNet/…) free of
     // races and guarantees samples never overlap, even if a disk walk runs long.
     private let sampleQueue = DispatchQueue(label: "com.jgdo.systemmonitor.sample", qos: .utility)
@@ -101,7 +122,7 @@ final class SystemMonitor {
     /// Gather a sample off the main thread (the IORegistry/getifaddrs walks are
     /// the costly part), then publish on the main thread for SwiftUI.
     private func sample() {
-        guard isPopoverVisible else { return }
+        guard isPopoverVisible || isMenuBarStatVisible || isQuickPanelVisible else { return }
         sampleQueue.async { [weak self] in
             guard let self else { return }
             let snapshot = self.fetcher.fetch()
@@ -125,8 +146,27 @@ final class SystemMonitor {
         timer = nil
     }
 
+    /// The popover and the menu bar live-stat label each independently
+    /// need sampling; either one being active is enough to keep the timer
+    /// running, and it stops only once both are off, so the app stays idle
+    /// (no background CPU) unless something is actually reading `status`.
     func setPopoverVisible(_ visible: Bool) {
         isPopoverVisible = visible
+        reconcileRunning()
+    }
+
+    func setMenuBarStatVisible(_ visible: Bool) {
+        isMenuBarStatVisible = visible
+        reconcileRunning()
+    }
+
+    func setQuickPanelVisible(_ visible: Bool) {
+        isQuickPanelVisible = visible
+        reconcileRunning()
+    }
+
+    private func reconcileRunning() {
+        if isPopoverVisible || isMenuBarStatVisible || isQuickPanelVisible { start() } else { stop() }
     }
 }
 
@@ -138,6 +178,10 @@ final class SystemStatusFetcher {
     private var prevCPU:  (user: UInt32, sys: UInt32, idle: UInt32, nice: UInt32) = (0,0,0,0)
     private var prevCores: [(user: UInt32, sys: UInt32, idle: UInt32, nice: UInt32)] = []
     private var prevNet:  (down: UInt64, up: UInt64, t: Date) = (0, 0, Date())
+    private var prevNetByInterface: [String: (down: UInt64, up: UInt64)] = [:]
+    private var prevNetByInterfaceTime = Date()
+    /// BSD name → friendly name ("en0" → "Wi-Fi"), via `SystemConfiguration`
+    /// — cheap enough to just re-fetch each sample rather than cache/invalidate.
     private var prevDisk: (read: UInt64, write: UInt64, t: Date) = (0, 0, Date())
 
     // The IORegistry walk in diskIOCumulative() is by far the costliest sample,
@@ -162,6 +206,7 @@ final class SystemStatusFetcher {
          s.diskWriteSpeed)        = diskIO()
         (s.netDownSpeed,
          s.netUpSpeed)            = networkSpeeds()
+        s.netInterfaces           = networkInterfaceSpeeds()
         (s.batteryPercent,
          s.isCharging,
          s.hasBattery,
@@ -354,6 +399,61 @@ final class SystemStatusFetcher {
         }
         prevNet = (d, u, now)
         return (dSpd, uSpd)
+    }
+
+    /// Per-interface breakdown for the Network detail tab — same
+    /// `getifaddrs` walk as `networkCumulative()`, just keyed by interface
+    /// instead of summed, plus a friendly display name resolved via the
+    /// public `SystemConfiguration` API (no special entitlement needed,
+    /// unlike `CNCopyCurrentNetworkInfo`'s SSID lookup, which this
+    /// deliberately doesn't attempt).
+    private func networkInterfaceSpeeds() -> [NetworkInterfaceStat] {
+        var cumulative: [String: (down: UInt64, up: UInt64)] = [:]
+        var ifHead: UnsafeMutablePointer<ifaddrs>? = nil
+        guard getifaddrs(&ifHead) == 0 else { return [] }
+        defer { freeifaddrs(ifHead) }
+
+        var ptr = ifHead
+        while let ifa = ptr {
+            defer { ptr = ifa.pointee.ifa_next }
+            guard let addr = ifa.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_LINK) else { continue }
+            let flags = Int32(ifa.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0 else { continue }
+            guard let dataPtr = ifa.pointee.ifa_data else { continue }
+            let name = String(cString: ifa.pointee.ifa_name)
+            let ifData = dataPtr.assumingMemoryBound(to: if_data.self).pointee
+            cumulative[name] = (UInt64(ifData.ifi_ibytes), UInt64(ifData.ifi_obytes))
+        }
+
+        let now = Date()
+        let dt = now.timeIntervalSince(prevNetByInterfaceTime)
+        let names = Self.interfaceDisplayNames()
+        var result: [NetworkInterfaceStat] = []
+        for (name, bytes) in cumulative {
+            var stat = NetworkInterfaceStat(bsdName: name, displayName: names[name] ?? name)
+            if dt > 0, let prev = prevNetByInterface[name], prev.down > 0 {
+                stat.downSpeed = max(Double(bytes.down &- prev.down) / dt, 0)
+                stat.upSpeed = max(Double(bytes.up &- prev.up) / dt, 0)
+            }
+            // Only surface interfaces that have actually carried traffic —
+            // an idle Bluetooth PAN or unused USB-Ethernet dongle would
+            // otherwise clutter the list with permanent zero rows.
+            if bytes.down > 0 || bytes.up > 0 { result.append(stat) }
+        }
+        prevNetByInterface = cumulative
+        prevNetByInterfaceTime = now
+        return result.sorted { $0.downSpeed + $0.upSpeed > $1.downSpeed + $1.upSpeed }
+    }
+
+    private static func interfaceDisplayNames() -> [String: String] {
+        guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else { return [:] }
+        var map: [String: String] = [:]
+        for iface in interfaces {
+            guard let bsdName = SCNetworkInterfaceGetBSDName(iface) as String? else { continue }
+            map[bsdName] = (SCNetworkInterfaceGetLocalizedDisplayName(iface) as String?) ?? bsdName
+        }
+        return map
     }
 
     private func networkCumulative() -> (down: UInt64, up: UInt64) {

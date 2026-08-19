@@ -16,7 +16,7 @@ struct CommandPaletteView: View {
 
     var body: some View {
         @Bindable var s = state
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             PanelSearchField(icon: "sparkle.magnifyingglass",
                              placeholder: "Search windows…",
                              text: $s.searchText,
@@ -24,8 +24,8 @@ struct CommandPaletteView: View {
             list
             footer
         }
-        .padding(18)
-        .frame(width: 620, height: 460)
+        .padding(14)
+        .frame(width: 480, height: 380)
         // `.glassEffect()`/`GlassEffectContainer` did real-time backdrop blur
         // sampling over this whole panel, re-triggered on every keystroke
         // (search filtering) and every arrow-key press (expand/collapse
@@ -63,12 +63,12 @@ struct CommandPaletteView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 26, weight: .light))
+                .font(.system(size: 22, weight: .light))
                 .foregroundStyle(.tertiary)
             Text("No matching windows")
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -84,7 +84,9 @@ struct CommandPaletteView: View {
             header(group)
             ForEach(Array(group.windows.enumerated()), id: \.element.id) { ri, window in
                 row(icon: .window(window), title: "\(group.appName) - \(window.windowTitle)",
-                    subtitle: nil, selected: ri == state.rowIndex)
+                    subtitle: nil, screenLabel: window.screenLabel,
+                    groupBadge: SnapGroupService.shared.groupName(forAppName: window.appName, title: window.windowTitle),
+                    selected: ri == state.rowIndex)
                     .onTapGesture {
                         state.groupIndex = gi
                         state.rowIndex = ri
@@ -95,7 +97,10 @@ struct CommandPaletteView: View {
             let subtitle = group.windows.count > 1
                 ? "\(group.windows.count) windows"
                 : (first.windowTitle == group.appName ? nil : first.windowTitle)
-            row(icon: .app(group.icon), title: group.appName, subtitle: subtitle, selected: isActive)
+            row(icon: .app(group.icon), title: group.appName, subtitle: subtitle,
+                screenLabel: first.screenLabel,
+                groupBadge: SnapGroupService.shared.groupName(forAppName: first.appName, title: first.windowTitle),
+                selected: isActive)
                 .onTapGesture {
                     state.groupIndex = gi
                     state.rowIndex = 0
@@ -109,19 +114,19 @@ struct CommandPaletteView: View {
     }
 
     private func header(_ group: CommandPaletteState.AppGroup) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             if let icon = group.icon {
-                Image(nsImage: icon).resizable().frame(width: 22, height: 22)
+                Image(nsImage: icon).resizable().frame(width: 18, height: 18)
             }
             Text(group.appName)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
             Text("\(group.windows.count) windows")
-                .font(.system(size: 11.5))
+                .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 11)
-        .padding(.top, 6)
+        .padding(.horizontal, 9)
+        .padding(.top, 5)
         .padding(.bottom, 2)
     }
 
@@ -130,34 +135,55 @@ struct CommandPaletteView: View {
         case window(WindowInfo)
     }
 
-    private func row(icon: RowIcon, title: String, subtitle: String?, selected: Bool) -> some View {
+    private func row(icon: RowIcon, title: String, subtitle: String?,
+                     screenLabel: String? = nil, groupBadge: String? = nil, selected: Bool) -> some View {
         let fill: Color = selected ? PanelTheme.selectedFill : .clear
         let stroke: Color = selected ? PanelTheme.selectedStroke : .clear
-        return HStack(spacing: 11) {
+        return HStack(spacing: 9) {
             rowIcon(icon)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
+                    .font(.system(size: 12, weight: selected ? .semibold : .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 11))
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
+            // Snap Group membership — clearly indicates this window is
+            // managed as part of a group, per the visual-UX requirement.
+            if let groupBadge {
+                Text(groupBadge)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .lineLimit(1)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.15)))
+            }
+            // Which display it's on — only meaningful (and only computed by
+            // WindowManagerService) when more than one screen is connected.
+            if let screenLabel {
+                Text(screenLabel)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(PanelTheme.chipFill))
+            }
             if selected {
                 Image(systemName: "return")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(fill))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(stroke, lineWidth: 1.5))
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(fill))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(stroke, lineWidth: 1.5))
         .contentShape(Rectangle())
     }
 
@@ -166,9 +192,9 @@ struct CommandPaletteView: View {
         switch icon {
         case .app(let image):
             if let image {
-                Image(nsImage: image).resizable().frame(width: 24, height: 24)
+                Image(nsImage: image).resizable().frame(width: 20, height: 20)
             } else {
-                Color.clear.frame(width: 24, height: 24)
+                Color.clear.frame(width: 20, height: 20)
             }
         case .window(let window):
             WindowRowIcon(window: window)
@@ -178,7 +204,7 @@ struct CommandPaletteView: View {
     // MARK: Footer hint
 
     private var footer: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             KeyHint(key: "↑↓", label: "Navigate")
             KeyHint(key: "↩", label: "Focus")
             KeyHint(key: "esc", label: "Close")
@@ -207,10 +233,10 @@ private struct WindowRowIcon: View {
                     .aspectRatio(contentMode: .fill)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             } else if let icon = window.icon {
-                Image(nsImage: icon).resizable().frame(width: 14, height: 14)
+                Image(nsImage: icon).resizable().frame(width: 12, height: 12)
             }
         }
-        .frame(width: 24, height: 24)
+        .frame(width: 20, height: 20)
         .clipped()
         .task(id: window.windowID) {
             thumbnail = await WindowThumbnailService.thumbnail(
