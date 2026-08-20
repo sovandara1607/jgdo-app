@@ -65,6 +65,20 @@ enum AppSettings {
     }
     /// Whether to show per-core CPU in status popover (default false).
     static var showPerCoreCPU: Bool { UserDefaults.standard.bool(forKey: showPerCoreCPUKey) }
+
+    /// Path to a user-chosen menu bar icon, copied into Application Support
+    /// so it survives the original file moving or being deleted. Empty/unset
+    /// means "use the bundled JgDo logo".
+    static let customStatusIconPathKey = "customStatusIconPath"
+    static var customStatusIconURL: URL? {
+        guard let path = UserDefaults.standard.string(forKey: customStatusIconPathKey), !path.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    /// Whether the custom icon should render as a monochrome template
+    /// (adapts to light/dark menu bar) rather than in full color.
+    static let customStatusIconTemplateKey = "customStatusIconTemplate"
+    static var customStatusIconTemplate: Bool { UserDefaults.standard.bool(forKey: customStatusIconTemplateKey) }
 }
 
 /// Which live reading, if any, shows as text next to the menu bar icon.

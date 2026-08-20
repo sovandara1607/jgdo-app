@@ -153,10 +153,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem?.button else { return }
-        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        defaultStatusIcon = NSImage(systemSymbolName: "rectangle.split.2x1",
-                                    accessibilityDescription: "JgDo")?
-            .withSymbolConfiguration(config)
+        defaultStatusIcon = loadStatusIcon()
         button.image = defaultStatusIcon
         button.imagePosition = .imageLeading
         // Left-click opens the full popover; right-click shows the quick
@@ -343,6 +340,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         image.isTemplate = false
         return image
+    }
+
+    // MARK: - Status bar icon (bundled logo or user-chosen replacement)
+
+    /// Loads the current menu bar icon: a user-chosen image if one is set in
+    /// Settings, otherwise the bundled JgDo logo. Scaled to menu bar size
+    /// (18pt, @2x/@3x-ready) so custom images of any resolution look crisp
+    /// without distorting the status item's layout.
+    private func loadStatusIcon() -> NSImage? {
+        let raw: NSImage?
+        if let url = AppSettings.customStatusIconURL {
+            raw = NSImage(contentsOf: url)
+        } else {
+            raw = NSImage(named: "StatusBarIcon")
+        }
+        guard let raw else { return nil }
+        let size = NSSize(width: 18, height: 18)
+        let scaled = NSImage(size: size, flipped: false) { rect in
+            raw.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                     respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+            return true
+        }
+        scaled.accessibilityDescription = "JgDo"
+        scaled.isTemplate = AppSettings.customStatusIconTemplate
+        return scaled
+    }
+
+    /// Called by Settings after the user picks/resets the menu bar icon.
+    func applyStatusIconSetting() {
+        defaultStatusIcon = loadStatusIcon()
+        if currentMenuBarStat == .off {
+            statusItem?.button?.image = defaultStatusIcon
+        }
     }
 
     // MARK: - Status badge (Focus Mode / Cleaning / Always on Top)

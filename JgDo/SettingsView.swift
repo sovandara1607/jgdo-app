@@ -67,11 +67,14 @@ struct GeneralSettingsView: View {
     @AppStorage(AppSettings.menuBarStatKey) private var menuBarStat = MenuBarStat.off.rawValue
     @AppStorage(AppSettings.lowBatteryEnabledKey) private var lowBatteryEnabled = true
     @AppStorage(AppSettings.lowBatteryThresholdKey) private var lowBatteryThreshold = 20
+    @AppStorage(AppSettings.customStatusIconPathKey) private var customStatusIconPath = ""
+    @AppStorage(AppSettings.customStatusIconTemplateKey) private var customStatusIconTemplate = false
     @State private var updateService = UpdateService.shared
     @State private var exportDoc: SettingsBackupDocument?
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var importError: String?
+    @State private var iconPickError: String?
 
     var body: some View {
         Form {
@@ -127,6 +130,25 @@ struct GeneralSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Text("Right-click the menu bar icon for a quick panel — volume/brightness sliders, Focus Mode, Keyboard Cleaning, Always on Top, and your last workspace — without opening the full popover. A small colored dot on the icon shows when Focus Mode, Cleaning, or a pin is active. Scroll over the icon to nudge system volume; hold ⌥ while scrolling for brightness.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                LabeledContent("Icon") {
+                    HStack(spacing: 8) {
+                        if let url = AppSettings.customStatusIconURL, let img = NSImage(contentsOf: url) {
+                            Image(nsImage: img).resizable().frame(width: 18, height: 18)
+                        } else {
+                            Image(nsImage: NSImage(named: "StatusBarIcon") ?? NSImage()).resizable().frame(width: 18, height: 18)
+                        }
+                        Button("Choose Image…") { pickCustomStatusIcon() }
+                        if !customStatusIconPath.isEmpty {
+                            Button("Use JgDo Logo") { resetCustomStatusIcon() }
+                        }
+                    }
+                }
+                Toggle("Render as monochrome template", isOn: $customStatusIconTemplate)
+                    .onChange(of: customStatusIconTemplate) { _, _ in AppDelegate.shared?.applyStatusIconSetting() }
+                Text("Pick any image to use as the menu bar icon in place of the JgDo logo. \"Monochrome template\" tints it to match the system menu bar automatically (best for simple, single-color glyphs); leave it off to keep the image's original colors.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -274,6 +296,49 @@ struct GeneralSettingsView: View {
         } message: {
             Text(importError ?? "")
         }
+        .alert("Couldn't Set Icon", isPresented: Binding(
+            get: { iconPickError != nil },
+            set: { if !$0 { iconPickError = nil } }
+        )) {
+            Button("OK") { iconPickError = nil }
+        } message: {
+            Text(iconPickError ?? "")
+        }
+    }
+
+    /// Lets the user pick any image file to replace the menu bar icon.
+    /// Copies it into Application Support so it keeps working even if the
+    /// original file is moved, renamed, or deleted.
+    private func pickCustomStatusIcon() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Menu Bar Icon"
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+
+        let dir = URL.applicationSupportDirectory.appendingPathComponent("JgDo/CustomIcons", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dest = dir.appendingPathComponent("status_icon." + source.pathExtension)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: source, to: dest)
+            customStatusIconPath = dest.path
+            AppDelegate.shared?.applyStatusIconSetting()
+        } catch {
+            iconPickError = "Couldn't copy that image: \(error.localizedDescription)"
+        }
+    }
+
+    private func resetCustomStatusIcon() {
+        if !customStatusIconPath.isEmpty {
+            try? FileManager.default.removeItem(atPath: customStatusIconPath)
+        }
+        customStatusIconPath = ""
+        customStatusIconTemplate = false
+        AppDelegate.shared?.applyStatusIconSetting()
     }
 }
 

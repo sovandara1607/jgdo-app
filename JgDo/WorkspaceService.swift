@@ -34,7 +34,8 @@ final class WorkspaceService {
         let workspace = Workspace(name: name)
 
         for info in windows {
-            guard let app = running.first(where: { $0.processIdentifier == info.pid }),
+            guard let app = running.first(where: {
+                $0.processIdentifier == info.pid }),
                   let bundleID = app.bundleIdentifier else { continue }
             // Find the screen containing this window for correct coordinate conversion
             let screen = NSScreen.screens.first { $0.frame.contains(CGRect(x: info.bounds.minX, y: NSScreen.screens.first?.frame.height ?? 0 - info.bounds.maxY, width: info.bounds.width, height: info.bounds.height)) } ?? NSScreen.main ?? NSScreen.screens[0]
