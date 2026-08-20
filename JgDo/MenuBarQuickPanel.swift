@@ -23,6 +23,10 @@ struct MenuBarQuickPanel: View {
     @State private var focus = FocusModeService.shared
     @State private var cleaning = CleaningModeController.shared
     @AppStorage(AppSettings.cleaningDurationKey) private var cleaningDuration: Int = 60
+    /// Keeps the sliders live while the panel is open, same as
+    /// `MonitorControlsTile` — otherwise hardware volume/brightness keys
+    /// pressed while this is open wouldn't be reflected until it's reopened.
+    @State private var pollTimer: Timer?
 
     private var lastWorkspaceName: String? { WorkspaceService.shared.workspaces.first?.name }
     private var recentClipboardItems: [ClipboardItem] { Array(clipboard.filteredItems.prefix(3)) }
@@ -39,6 +43,7 @@ struct MenuBarQuickPanel: View {
                 sliderRow(icon: "sun.max.fill", value: Double(monitor.brightness)) {
                     monitor.setBrightness(Float($0))
                 }
+                .animation(.linear(duration: 0.1), value: monitor.brightness)
             }
             if monitor.volumeAvailable {
                 HStack(spacing: 8) {
@@ -56,6 +61,7 @@ struct MenuBarQuickPanel: View {
                         set: { monitor.setVolume(Float($0)) }
                     ), in: 0...1)
                 }
+                .animation(.linear(duration: 0.1), value: monitor.volume)
             }
             if monitor.brightnessAvailable || monitor.volumeAvailable {
                 divider
@@ -87,6 +93,17 @@ struct MenuBarQuickPanel: View {
         }
         .padding(12)
         .frame(width: 250)
+        .glassPopoverCard()
+        .onAppear {
+            monitor.refresh()
+            pollTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
+                monitor.refresh()
+            }
+        }
+        .onDisappear {
+            pollTimer?.invalidate()
+            pollTimer = nil
+        }
     }
 
     // MARK: Battery / Network

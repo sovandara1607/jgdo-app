@@ -141,6 +141,58 @@ private enum PopoverTab: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Overview ring gauge (icon at rest, + percentage on hover)
+
+/// One CPU/Memory/Disk ring in the Overview tab's quick-stat row. Shows just
+/// its icon at rest; hovering adds the live percentage alongside it rather
+/// than replacing it — a plain `func` helper can't hold its own `@State`, so
+/// this needs to be its own `View` to track hover per-gauge.
+struct RingGauge: View {
+    let icon: String
+    let label: String
+    let percent: Double
+    let color: Color
+
+    @State private var isHovering = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .stroke(Theme.track, lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: min(max(percent, 0), 1))
+                    .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.45), value: percent)
+                VStack(spacing: 1) {
+                    Image(systemName: icon)
+                        .font(.system(size: isHovering ? 12 : 15, weight: .medium))
+                        .foregroundStyle(isHovering ? .secondary : .primary)
+                    if isHovering {
+                        Text(String(format: "%.0f", percent * 100))
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.12), value: isHovering)
+            }
+            .frame(width: 48, height: 48)
+            .contentShape(Circle())
+            .onHover { hovering in
+                isHovering = hovering
+            }
+            Text(label.uppercased())
+                .font(.system(size: 8.5, weight: .semibold))
+                .tracking(0.3)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 struct StatusPopoverView: View {
     @State private var monitor = SystemMonitor.shared
     @State private var focus = FocusModeService.shared
@@ -156,15 +208,21 @@ struct StatusPopoverView: View {
             iconToolbar
             VStack(alignment: .leading, spacing: 6) {
                 sectionHeader
-                ScrollView {
+                // `showsIndicators: false` here (rather than the trailing
+                // `.scrollIndicators(.hidden)` modifier) is what actually
+                // stops SwiftUI reserving a scrollbar gutter down the right
+                // edge — the modifier only hid the indicator visually and
+                // left the reserved space behind as a gap.
+                ScrollView(.vertical, showsIndicators: false) {
                     card
+                        .background(ScrollbarHider())
                 }
             }
             footer
         }
         .padding(11)
         .frame(width: 288, height: 400)
-        .background(.regularMaterial)
+        .glassPopoverCard()
     }
 
     // MARK: Icon toolbar (section switcher, pill container)
@@ -296,36 +354,12 @@ struct StatusPopoverView: View {
 
     private var ringGrid: some View {
         HStack(spacing: 0) {
-            ringGauge(label: "CPU", percent: monitor.status.cpuPercent / 100, color: Theme.accent)
-            ringGauge(label: "Memory", percent: monitor.status.memPercent, color: Theme.accent)
-            ringGauge(label: "Disk", percent: monitor.status.diskPercent, color: Theme.accent)
+            RingGauge(icon: "cpu", label: "CPU", percent: monitor.status.cpuPercent / 100, color: Theme.accent)
+            RingGauge(icon: "memorychip", label: "Memory", percent: monitor.status.memPercent, color: Theme.accent)
+            RingGauge(icon: "internaldrive", label: "Disk", percent: monitor.status.diskPercent, color: Theme.accent)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 12)
-    }
-
-    private func ringGauge(label: String, percent: Double, color: Color) -> some View {
-        VStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .stroke(Theme.track, lineWidth: 5)
-                Circle()
-                    .trim(from: 0, to: min(max(percent, 0), 1))
-                    .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.easeInOut(duration: 0.45), value: percent)
-                Text(String(format: "%.0f", percent * 100))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-            }
-            .frame(width: 48, height: 48)
-            Text(label.uppercased())
-                .font(.system(size: 8.5, weight: .semibold))
-                .tracking(0.3)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: Overview — quick actions row

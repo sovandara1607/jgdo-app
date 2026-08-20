@@ -168,6 +168,7 @@ struct MonitorControlsTile: View {
                                    value: Double(service.brightness)) {
                             service.setBrightness(Float($0))
                         }
+                        .animation(.linear(duration: 0.1), value: service.brightness)
                     }
                     if service.volumeAvailable {
                         HStack(spacing: 8) {
@@ -187,12 +188,19 @@ struct MonitorControlsTile: View {
                                 set: { service.setVolume(Float($0)) }
                             ), in: 0...1)
                         }
+                        .animation(.linear(duration: 0.1), value: service.volume)
                     }
                 }
             }
             .onAppear {
                 service.refresh()
-                pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+                // Fast enough that hardware volume/brightness keys (which
+                // this app doesn't intercept — it just polls the system
+                // value) look like they're smoothly tracked instead of
+                // stepping visibly every ~third of a second. Paired with the
+                // `.animation()` above so each poll tick eases into place
+                // rather than snapping.
+                pollTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
                     service.refresh()
                 }
             }

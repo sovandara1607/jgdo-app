@@ -48,7 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) static weak var shared: AppDelegate?
 
     private var statusItem: NSStatusItem?
-    private var statusPopover: NSPopover?
+    private var statusPopover: MenuBarPopoverPanel?
     /// The plain SF Symbol icon, restored when the menu bar's live-stat
     /// gauge (see `updateMenuBarStat`) is switched off.
     private var defaultStatusIcon: NSImage?
@@ -184,32 +184,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Quick panel (right-click)
 
-    private var quickPopover: NSPopover?
+    private var quickPopover: MenuBarPopoverPanel?
 
     private func setupQuickPopover() {
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.delegate = self
-        let rootView = MenuBarQuickPanel(
-            onOpenSettings: { [weak self] in
-                self?.quickPopover?.performClose(nil)
-                SettingsWindow.show()
-            },
-            onRestoreWorkspace: { [weak self] in
-                guard let last = WorkspaceService.shared.workspaces.first else { return }
-                WorkspaceService.shared.restore(last)
-                self?.quickPopover?.performClose(nil)
-            },
-            onToggleAlwaysOnTop: { [weak self] in self?.toggleAlwaysOnTopOnFrontmost() },
-            onToggleWindowMemory: { [weak self] in self?.toggleWindowMemoryOnFrontmost() },
-            onPickClipboardItem: { [weak self] item in
-                self?.pickClipboardItem(item)
-                self?.quickPopover?.performClose(nil)
-            },
-            onQuit: { NSApp.terminate(nil) }
-        )
-        popover.contentViewController = NSHostingController(rootView: rootView)
+        let popover = MenuBarPopoverPanel()
+        popover.onClose = { SystemMonitor.shared.setQuickPanelVisible(false) }
         quickPopover = popover
     }
 
@@ -218,19 +197,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             toggleStatusPopover()   // unlicensed installs only get the activation flow
             return
         }
-        if popover.isShown { popover.performClose(nil); return }
-        statusPopover?.performClose(nil)
+        if popover.isShown { popover.performClose(); return }
+        statusPopover?.performClose()
         // `pickClipboardItem` pastes back into whichever app was frontmost
         // when the panel opened — same bookkeeping the dedicated clipboard
         // panel does (see `showClipboardPanel`).
         clipboardReturnApp = NSWorkspace.shared.frontmostApplication
         SystemMonitor.shared.setQuickPanelVisible(true)
         MonitorControlService.shared.refresh()
+        let rootView = MenuBarQuickPanel(
+            onOpenSettings: { [weak self] in
+                self?.quickPopover?.performClose()
+                SettingsWindow.show()
+            },
+            onRestoreWorkspace: { [weak self] in
+                guard let last = WorkspaceService.shared.workspaces.first else { return }
+                WorkspaceService.shared.restore(last)
+                self?.quickPopover?.performClose()
+            },
+            onToggleAlwaysOnTop: { [weak self] in self?.toggleAlwaysOnTopOnFrontmost() },
+            onToggleWindowMemory: { [weak self] in self?.toggleWindowMemoryOnFrontmost() },
+            onPickClipboardItem: { [weak self] item in
+                self?.pickClipboardItem(item)
+                self?.quickPopover?.performClose()
+            },
+            onQuit: { NSApp.terminate(nil) }
+        )
         // Deliberately no `NSApp.activate` here (unlike the HUD/palette
         // panels) — keeps `NSWorkspace.shared.frontmostApplication` pointing
         // at whatever app the user was in, so "Toggle Always on Top" affects
         // that app's window, not JgDo's own popover.
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.show(relativeTo: button, rootView: rootView)
     }
 
     /// Shared by the ⌃⌥T hotkey and the quick panel's "Toggle Always on Top".
@@ -467,14 +464,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupStatusPopover() {
-        let popover = NSPopover()
-        popover.contentSize = NSSize(width: 288, height: 400)
-        popover.behavior = .transient
-        popover.animates = true
-        popover.delegate = self
-        let rootView = StatusPopoverView()
-            .environment(\.dismissPopover) { [weak popover] in popover?.performClose(nil) }
-        popover.contentViewController = NSHostingController(rootView: rootView)
+        let popover = MenuBarPopoverPanel()
+        popover.onClose = { SystemMonitor.shared.setPopoverVisible(false) }
         statusPopover = popover
     }
 
@@ -486,16 +477,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button, let popover = statusPopover else { return }
         hideHUD()
         if popover.isShown {
-            popover.performClose(nil)
+            popover.performClose()
         } else {
             // Start sampling just before showing so values are ready, then it
-            // keeps running until the popover closes (see popoverDidClose).
+            // keeps running until the popover closes (see the `onClose`
+            // closure set in `setupStatusPopover`).
             SystemMonitor.shared.setPopoverVisible(true)
             SystemMonitor.shared.start()
             MonitorControlService.shared.refresh()
             WorkflowInsightsService.shared.refresh()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
+            quickPopover?.performClose()
+            let rootView = StatusPopoverView()
+                .environment(\.dismissPopover) { [weak popover] in popover?.performClose() }
+            popover.show(relativeTo: button, rootView: rootView)
         }
     }
 
@@ -1128,7 +1122,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupOrganizePanel() {
         let panel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
+            // Matches `OrganizeWorkspaceView`'s own `.frame(width: 560, ...)`
+            // — see the comment there for why 420 was too narrow.
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
             styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -1332,22 +1328,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
-}
-
-// MARK: - Popover lifecycle (pause monitoring when closed)
-
-extension AppDelegate: NSPopoverDelegate {
-    func popoverDidClose(_ notification: Notification) {
-        // Shared by both popovers (`statusPopover` and `quickPopover`) —
-        // neither unconditionally stops sampling; `SystemMonitor.
-        // reconcileRunning` only stops it once every visibility reason
-        // (main popover, quick panel, menu bar live-stat label) is off.
-        if notification.object as AnyObject? === quickPopover {
-            SystemMonitor.shared.setQuickPanelVisible(false)
-        } else {
-            SystemMonitor.shared.setPopoverVisible(false)
-        }
-    }
 }
 
 // MARK: - Environment key (kept for compatibility)

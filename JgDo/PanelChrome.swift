@@ -35,6 +35,83 @@ extension View {
     func panelCard() -> some View { modifier(PanelCard()) }
 }
 
+// MARK: - Glass popover card (menu bar popovers)
+
+/// A glass-morphism card for the menu-bar popovers (`StatusPopoverView`,
+/// `MenuBarQuickPanel`) — soft charcoal frosted glass with a faint rim,
+/// modeled after the lighter, flatter frosted look of menu-bar utilities
+/// like OneMenu rather than a near-black slab. No `.shadow()` here — the
+/// window itself (`MenuBarPopoverPanel`) supplies a native shadow instead,
+/// which reads much cleaner than a manually-drawn one clipped to the
+/// window's bounds.
+struct GlassPopoverCard: ViewModifier {
+    var cornerRadius: CGFloat = 18
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+            .background(
+                // Lightens the material toward a soft charcoal instead of
+                // letting it go near-black over a busy/dark desktop —
+                // `.ultraThinMaterial` alone reads too dark against
+                // wallpaper.
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(0.09))
+            )
+            .overlay(
+                // A faint rim, slightly brighter at the top like light
+                // catching the top of a glass pane, instead of a uniform
+                // hairline all the way around.
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.22), Color.white.opacity(0.05)],
+                            startPoint: .top, endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
+            )
+    }
+}
+
+extension View {
+    func glassPopoverCard(cornerRadius: CGFloat = 18) -> some View {
+        modifier(GlassPopoverCard(cornerRadius: cornerRadius))
+    }
+}
+
+// MARK: - Scrollbar hider
+
+/// Force-disables the enclosing `ScrollView`'s native scroller. SwiftUI's
+/// own `.scrollIndicators(.hidden)` doesn't reliably win against macOS's
+/// "Show scroll bars: Always" system setting, which keeps the legacy
+/// (non-overlay) `NSScroller` visible regardless — this reaches into AppKit
+/// directly via `enclosingScrollView` instead. Drop it in as a zero-size
+/// `.background(ScrollbarHider())` on the scrolled content.
+struct ScrollbarHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            guard let scrollView = view.enclosingScrollView else { return }
+            scrollView.hasVerticalScroller = false
+            scrollView.hasHorizontalScroller = false
+            // Disabling the scroller after AppKit's already laid the scroll
+            // view out (this runs a beat after `makeNSView`) leaves the
+            // content area sized as if the scroller's width were still
+            // reserved — a blank gap down the right edge where it used to
+            // be. `tile()` forces it to recompute the content frame now
+            // that there's no scroller to make room for.
+            scrollView.tile()
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 // MARK: - Search field
 
 /// Search field shown at the top of the floating panels. Navigation keys are

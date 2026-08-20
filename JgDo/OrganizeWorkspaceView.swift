@@ -31,6 +31,7 @@ struct OrganizeWorkspaceView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .controlSize(.small)
 
             HStack(spacing: 12) {
                 schematic(title: "CURRENT", frames: windows.map { ($0, $0.appKitFrame(mainHeight: mainHeight)) })
@@ -64,7 +65,12 @@ struct OrganizeWorkspaceView: View {
             KeyHint(key: "esc", label: "Close")
         }
         .padding(16)
-        .frame(width: 420, height: 300)
+        // Wide enough for all 5 segmented-picker labels ("Balanced" …
+        // "Main + Stack") to fit without AppKit clipping/cutting off the
+        // outer segments — at the old 420pt width "Balanced" and "Main +
+        // Stack" were rendered partly outside the window, so they couldn't
+        // be clicked at all.
+        .frame(width: 560, height: 300)
         .panelCard()
     }
 
@@ -99,6 +105,14 @@ struct OrganizeWorkspaceView: View {
                             .id(i)
                     }
                 }
+                // `.position()` doesn't clip to the parent's bounds, so a
+                // window taller/wider than `screen.visibleFrame` (e.g. one
+                // that extends behind the menu bar) can push a box's
+                // computed center outside this schematic entirely — it was
+                // bleeding up into the title/tab row above. The schematic is
+                // just a miniature preview, so it should never paint outside
+                // its own rounded rect regardless of that math.
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
         }
         .frame(maxWidth: .infinity)
