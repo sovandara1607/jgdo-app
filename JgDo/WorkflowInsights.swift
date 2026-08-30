@@ -11,6 +11,15 @@ import SwiftData
 final class WorkflowInsightsService {
     static let shared = WorkflowInsightsService()
 
+    static let enabledKey = "workflowInsightsEnabled"
+    /// On by default, same convention as `ClipboardService.isEnabled` —
+    /// off is an explicit opt-out via onboarding or Settings, not the
+    /// default. Only gates *recording*; `refresh()`/existing history reads
+    /// still work so turning it back on doesn't lose what's already stored.
+    var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+    }
+
     struct AppUsage: Identifiable {
         let bundleID: String
         let name: String
@@ -36,6 +45,7 @@ final class WorkflowInsightsService {
     /// Called on every app activation. Gaps longer than `idleCap` count as
     /// idle time, not usage of the previous app.
     func recordActivation(of app: NSRunningApplication) {
+        guard isEnabled else { return }
         guard let bundleID = app.bundleIdentifier else { return }
         let event = AppUsageEvent(bundleID: bundleID,
                                   appName: app.localizedName ?? bundleID,
@@ -52,8 +62,8 @@ final class WorkflowInsightsService {
     func pruneOldEvents() {
         let cutoff = Date().addingTimeInterval(-14 * 86400)
         let ctx = Persistence.shared.context
-        let old = (try? ctx.fetch(FetchDescriptor<AppUsageEvent>(
-            predicate: #Predicate { $0.timestamp < cutoff }))) ?? []
+        let old = ctx.fetchLogged(FetchDescriptor<AppUsageEvent>(
+            predicate: #Predicate { $0.timestamp < cutoff }), using: AppLog.general)
         guard !old.isEmpty else { return }
         for e in old { ctx.delete(e) }
         Persistence.shared.save()
@@ -66,9 +76,9 @@ final class WorkflowInsightsService {
     func refresh() {
         let ctx = Persistence.shared.context
         let startOfDay = Calendar.current.startOfDay(for: Date())
-        let events = ((try? ctx.fetch(FetchDescriptor<AppUsageEvent>(
+        let events = ctx.fetchLogged(FetchDescriptor<AppUsageEvent>(
             predicate: #Predicate { $0.timestamp >= startOfDay },
-            sortBy: [SortDescriptor(\.timestamp)]))) ?? [])
+            sortBy: [SortDescriptor(\.timestamp)]), using: AppLog.general)
 
         todayUsage = usage(from: events)
         suggestion = topPair(from: events)
@@ -155,17 +165,36 @@ struct InsightsTile: View {
                                 .frame(width: 44, alignment: .trailing)
                         }
                     }
-                    if let pair = service.suggestion {
-                        HStack(spacing: 6) {
-                            Image(systemName: "lightbulb")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.orange)
-                            Text("You've switched between \(pair.firstName) and \(pair.secondName) \(pair.switches)× today — try ⌥Space to snap them side by side.")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                    // Actionable, not just an observation — a passive insight
+                    // with no next step is noise; a one-tap "Create
+                    // Workspace" turns the same signal into something done.
+                    if let pair = service.suggestion, TipsStore.tipsEnabled {
+                        Button {
+                            WorkspaceService.shared.saveCurrentLayout(named: "\(pair.firstName) + \(pair.secondName)")
+                        } label: {
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "lightbulb.fill")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.yellow)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(pair.firstName) and \(pair.secondName) are often used together.")
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    HStack(spacing: 3) {
+                                        Text("Create Workspace")
+                                        Image(systemName: "arrow.right")
+                                    }
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(Color.accentColor)
+                                }
+                            }
                         }
+                        .buttonStyle(.plain)
                         .padding(.top, 2)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(pair.firstName) and \(pair.secondName) are often used together")
+                        .accessibilityHint("Create a workspace from them.")
                     }
                 }
             }

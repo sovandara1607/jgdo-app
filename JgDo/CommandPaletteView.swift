@@ -11,6 +11,8 @@ import AppKit
 struct CommandPaletteView: View {
     let onDismiss: () -> Void
     let onPick: (WindowInfo) -> Void
+    let onPickCommand: (CommandPaletteState.PaletteCommand) -> Void
+    let onPickFile: (FileSearchResult) -> Void
     @Environment(CommandPaletteState.self) private var state
     @FocusState private var searchFocused: Bool
 
@@ -43,14 +45,28 @@ struct CommandPaletteView: View {
 
     private var list: some View {
         let groups = state.filteredGroups
+        let commands = state.commandResults
+        let files = state.fileResults
         return Group {
-            if groups.isEmpty {
+            if groups.isEmpty && commands.isEmpty && files.isEmpty {
                 emptyState
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 3) {
                         ForEach(Array(groups.enumerated()), id: \.element.id) { gi, group in
                             groupRows(group, groupIndex: gi)
+                        }
+                        if !commands.isEmpty {
+                            sectionHeader(state.commandResultsAreRecent ? "RECENT" : "WINDOW")
+                            ForEach(Array(commands.enumerated()), id: \.element.id) { ci, command in
+                                commandRow(command, index: ci)
+                            }
+                        }
+                        if !files.isEmpty {
+                            sectionHeader("FILES")
+                            ForEach(Array(files.enumerated()), id: \.element.id) { fi, file in
+                                fileRow(file, index: fi)
+                            }
                         }
                     }
                     .padding(.horizontal, 2)
@@ -62,12 +78,133 @@ struct CommandPaletteView: View {
         .animation(.spring(duration: 0.3, bounce: 0.22), value: state.groupIndex)
     }
 
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 9, weight: .semibold))
+            .tracking(0.5)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 9)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+    }
+
+    private func commandRow(_ command: CommandPaletteState.PaletteCommand, index: Int) -> some View {
+        let selected = state.commandSectionActive && index == state.commandIndex
+        let fill: Color = selected ? PanelTheme.selectedFill : .clear
+        let stroke: Color = selected ? PanelTheme.selectedStroke : .clear
+        return HStack(spacing: 9) {
+            // The layout diagram is the primary "what will happen" signal
+            // for this row — leads even ahead of the target app's own icon,
+            // which stays available as a small badge instead (see below).
+            LayoutPreviewIcon(layout: command.layout)
+                .frame(width: 22, height: 15)
+            Text(command.label)
+                .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if let icon = command.targetIcon {
+                Image(nsImage: icon).resizable().frame(width: 14, height: 14)
+            }
+            if let shortcut = command.shortcutDisplay {
+                Text(shortcut)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(PanelTheme.chipFill))
+            }
+            if selected {
+                Image(systemName: "return")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(fill))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(stroke, lineWidth: 1.5))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            state.commandSectionActive = true
+            state.commandIndex = index
+            onPickCommand(command)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(command.label)
+        .accessibilityHint(command.shortcutDisplay.map { "Shortcut \($0). Activates this window layout." } ?? "Activates this window layout.")
+    }
+
+    private func fileRow(_ file: FileSearchResult, index: Int) -> some View {
+        let selected = state.fileSectionActive && index == state.fileIndex
+        let fill: Color = selected ? PanelTheme.selectedFill : .clear
+        let stroke: Color = selected ? PanelTheme.selectedStroke : .clear
+        return HStack(spacing: 9) {
+            if let icon = file.icon {
+                Image(nsImage: icon).resizable().frame(width: 20, height: 20)
+            } else {
+                Color.clear.frame(width: 20, height: 20)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.name)
+                    .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(file.folderPath)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if let kind = file.kind {
+                Text(kind)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(PanelTheme.chipFill))
+            }
+            if selected {
+                Image(systemName: "return")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(fill))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(stroke, lineWidth: 1.5))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            state.fileSectionActive = true
+            state.fileIndex = index
+            onPickFile(file)
+        }
+        .contextMenu {
+            Button("Open") { onPickFile(file) }
+            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file.url]) }
+            Divider()
+            Button("Copy Path") { copyToPasteboard(file.url.path) }
+            Button("Copy URL") { copyToPasteboard(file.url.absoluteString) }
+            Divider()
+            Button("Quick Look") { QuickLookCoordinator.shared.preview(file.url) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(file.name), in \(file.folderPath)")
+        .accessibilityHint("Opens the file. A context menu offers Reveal in Finder, copying its path or URL, and Quick Look.")
+    }
+
+    private func copyToPasteboard(_ string: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(string, forType: .string)
+    }
+
     private var emptyState: some View {
         VStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 22, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("No matching windows")
+            Text(AppSettings.fileSearchEnabled ? "No matching windows or files" : "No matching windows")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
@@ -110,6 +247,7 @@ struct CommandPaletteView: View {
                         onPick(first)
                     }
                 }
+                .modifier(FavoriteAppMenu(bundleID: group.bundleID, appName: group.appName, state: state))
         }
     }
 
@@ -133,6 +271,27 @@ struct CommandPaletteView: View {
     private enum RowIcon {
         case app(NSImage?)
         case window(WindowInfo)
+    }
+
+    /// "Add/Remove from Favorites" context menu — only for real running
+    /// apps (not launch-suggestion or `>` action rows, which have no
+    /// bundleID).
+    private struct FavoriteAppMenu: ViewModifier {
+        let bundleID: String?
+        let appName: String
+        let state: CommandPaletteState
+
+        func body(content: Content) -> some View {
+            if let bundleID {
+                content.contextMenu {
+                    Button(AppSettings.favoriteAppBundleIDs.contains(bundleID) ? "Remove from Favorites" : "Add to Favorites") {
+                        state.toggleFavoriteApp(bundleID: bundleID)
+                    }
+                }
+            } else {
+                content
+            }
+        }
     }
 
     private func row(icon: RowIcon, title: String, subtitle: String?,
@@ -206,11 +365,20 @@ struct CommandPaletteView: View {
     private var footer: some View {
         HStack(spacing: 12) {
             KeyHint(key: "↑↓", label: "Navigate")
-            KeyHint(key: "↩", label: "Focus")
+            KeyHint(key: "↩", label: returnHintLabel)
+            if state.fileSectionActive {
+                KeyHint(key: "space", label: "Quick Look")
+            }
             KeyHint(key: "esc", label: "Close")
             Spacer()
         }
         .padding(.horizontal, 4)
+    }
+
+    private var returnHintLabel: String {
+        if state.fileSectionActive { return "Open" }
+        if state.commandSectionActive { return "Apply" }
+        return "Focus"
     }
 }
 

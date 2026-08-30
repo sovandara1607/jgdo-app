@@ -49,18 +49,50 @@ final class WindowResizeService {
         targetFrame(for: layout, on: screen)
     }
 
-    /// Resize the focused window of an arbitrary app (used by the switcher's pick).
-    /// Returns true if a window was found and resized.
-    @discardableResult
-    func resize(app: NSRunningApplication, to layout: WindowLayout) -> Bool {
-        resize(app: app, to: layout, fraction: 0.5) != nil
+    /// Frame (AppKit coords) `layout` would take at an arbitrary fraction of
+    /// `screen` — the same geometry `resize(app:to:fraction:)` and the
+    /// hotkey edge-snap cycle apply, exposed read-only so the ⌃⌥←/→ layout
+    /// overlay can preview non-default fractions ("Left Third", "Two Thirds
+    /// Right") before anything actually moves. `fraction` is ignored for
+    /// layouts that aren't edge-anchored halves (quarters, maximize, center
+    /// only ever have one size).
+    func previewFrame(for layout: WindowLayout, fraction: CGFloat, on screen: NSScreen) -> CGRect {
+        guard Self.cyclableLayouts.contains(layout) else { return targetFrame(for: layout, on: screen) }
+        let g = max(edgeGap, 0)
+        let area = screen.visibleFrame.insetBy(dx: g, dy: g)
+        return edgeFrame(for: layout, fraction: fraction, area: area, hg: g / 2)
     }
 
-    /// Resize the topmost on-screen window that does NOT belong to `frontPID`.
-    /// This is the "any other visible window" partner for a dual snap. Tries each
-    /// candidate in front-to-back order until one actually resizes (some apps
-    /// expose no resizable focused window). Does not change focus.
-    /// Returns true if a partner window was resized.
+    /// Resizes a specific, already-resolved window — used by the ⌃⌥←/→
+    /// overlay, which pins its target window once when the gesture starts
+    /// rather than re-resolving "the focused window" on every arrow press.
+    /// Same geometry as `resize(app:to:fraction:)`; this is the one place
+    /// that actually calls `apply`, so previewing and committing can never
+    /// compute different frames for the same step.
+    @discardableResult
+    func resize(_ axWindow: AXUIElement, to layout: WindowLayout, fraction: CGFloat, on screen: NSScreen) -> CGRect {
+        let frame = previewFrame(for: layout, fraction: fraction, on: screen)
+        apply(frame: frame, to: axWindow, screen: screen)
+        return frame
+    }
+
+    /// Resize the focused window of an arbitrary app (used by the switcher's
+    /// pick, and the Command Palette's layout commands). Returns the frame
+    /// actually applied and which screen it's on (AppKit coords) — nil if no
+    /// window was found — for callers that want to flash a ghost preview of
+    /// the result, matching what `resizeFrontmostWindow(to:)` already
+    /// returns for the current app. Existing callers that only cared about
+    /// success/failure can just check the result for nil; none of them
+    /// inspected a `Bool` return value beyond that.
+    @discardableResult
+    func resize(app: NSRunningApplication, to layout: WindowLayout) -> (frame: CGRect, screen: NSScreen)? {
+        resize(app: app, to: layout, fraction: 0.5)
+    }
+
+    /// Resize the best OTHER visible window (see `WindowCandidateSelector`)
+    /// that does NOT belong to `frontPID`. This is the "any other visible
+    /// window" partner for a dual snap. Does not change focus. Returns true
+    /// if a partner window was resized.
     @discardableResult
     func resizeOtherVisibleWindow(excluding frontPID: pid_t?, to layout: WindowLayout) -> Bool {
         resizeOtherVisibleWindow(excluding: frontPID, to: layout, fraction: 0.5) != nil
@@ -69,21 +101,34 @@ final class WindowResizeService {
     /// Same as `resizeOtherVisibleWindow(excluding:to:)`, but at an explicit
     /// fraction of the screen instead of always exactly half — used to keep
     /// a dual-snap partner complementary to the primary window's current
-    /// edge-snap cycle step (see `complementFraction(for:)`). Returns the
-    /// frame it actually applied (AppKit coords), for the ghost preview.
+    /// edge-snap cycle step (see `complementFraction(for:)`). `preferredScreen`,
+    /// if given, is the primary window's own screen — candidates already on
+    /// it are ranked higher, so a dual-snap on Monitor 1 doesn't reach across
+    /// to grab a window from Monitor 2. Returns the frame it actually
+    /// applied (AppKit coords), for the ghost preview. Records the pairing
+    /// with `WindowPairService` on success, so this exact pick gets
+    /// reinforced next time.
     @discardableResult
-    func resizeOtherVisibleWindow(excluding frontPID: pid_t?, to layout: WindowLayout, fraction: CGFloat) -> CGRect? {
-        let windows = WindowManagerService().fetchWindows()   // front-to-back, excludes JgDo
-        var seenPIDs = Set<pid_t>()
-        for window in windows where window.pid != frontPID {
-            guard !seenPIDs.contains(window.pid) else { continue }
-            seenPIDs.insert(window.pid)
-            if let app = NSRunningApplication(processIdentifier: window.pid),
-               let frame = resize(app: app, to: layout, fraction: fraction) {
-                return frame
-            }
-        }
-        return nil
+    func resizeOtherVisibleWindow(excluding frontPID: pid_t?, to layout: WindowLayout,
+                                   fraction: CGFloat, preferredScreen: NSScreen? = nil) -> CGRect? {
+        guard let winner = WindowCandidateSelector.bestPartner(excluding: frontPID, preferredScreen: preferredScreen),
+              let app = NSRunningApplication(processIdentifier: winner.pid),
+              let result = resize(app: app, to: layout, fraction: fraction) else { return nil }
+        let frontBundleID = frontPID.flatMap { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier }
+        WindowPairService.shared.record(frontBundleID, app.bundleIdentifier)
+        return result.frame
+    }
+
+    /// Non-mutating counterpart to `resizeOtherVisibleWindow(excluding:to:fraction:preferredScreen:)`
+    /// — the frame the same candidate `WindowCandidateSelector` would pick
+    /// WOULD land at, without touching it or recording anything. Used to
+    /// live-preview the ⌃⌥←/→ hold-and-release overlay's auto-fill partner
+    /// while the user is still cycling steps, before anything commits for
+    /// real.
+    func previewOtherVisibleWindow(excluding frontPID: pid_t?, to layout: WindowLayout,
+                                    fraction: CGFloat, on screen: NSScreen) -> CGRect? {
+        guard WindowCandidateSelector.bestPartner(excluding: frontPID, preferredScreen: screen) != nil else { return nil }
+        return previewFrame(for: layout, fraction: fraction, on: screen)
     }
 
     /// A "step/total" cycle position indicator for `layout` (e.g. "2/3"), if
@@ -107,42 +152,34 @@ final class WindowResizeService {
     /// Resize the focused window of `app` to `layout` at a given fraction of
     /// the screen (0.5 = the plain preset for edge-anchored halves; ignored
     /// for non-cyclable layouts, which only ever have one size). Returns the
-    /// frame it actually applied (AppKit coords), or nil if no window was found.
+    /// frame it actually applied (AppKit coords) and which screen it's on,
+    /// or nil if no window was found. Internal (not private): also the
+    /// commit path for the ⌃⌥←/→ overlay's Tab-triggered partner search,
+    /// which only has a candidate's `NSRunningApplication`, not a
+    /// pre-resolved `AXUIElement`.
     @discardableResult
-    private func resize(app: NSRunningApplication, to layout: WindowLayout, fraction: CGFloat) -> CGRect? {
+    func resize(app: NSRunningApplication, to layout: WindowLayout, fraction: CGFloat) -> (frame: CGRect, screen: NSScreen)? {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var ref: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString,
                                             &ref) == .success, let ref else { return nil }
         let axWindow = ref as! AXUIElement
         let screen = screenForWindow(axWindow) ?? NSScreen.main ?? NSScreen.screens[0]
-        let frame: CGRect
-        if Self.cyclableLayouts.contains(layout) {
-            let g = max(edgeGap, 0)
-            let area = screen.visibleFrame.insetBy(dx: g, dy: g)
-            frame = edgeFrame(for: layout, fraction: fraction, area: area, hg: g / 2)
-        } else {
-            frame = targetFrame(for: layout, on: screen)
-        }
-        apply(frame: frame, to: axWindow, screen: screen)
-        return frame
+        let frame = resize(axWindow, to: layout, fraction: fraction, on: screen)
+        return (frame, screen)
     }
 
     // MARK: - Private
 
     private func screenForWindow(_ axWindow: AXUIElement) -> NSScreen? {
         var posRef: CFTypeRef?
-        
-        
         guard AXUIElementCopyAttributeValue(axWindow, kAXPositionAttribute as CFString,
                                             &posRef) == .success,
               let posRef else { return nil }
         var cgOrigin = CGPoint.zero
         AXValueGetValue(posRef as! AXValue, .cgPoint, &cgOrigin)
-        // CG coords: top-left origin. Convert to AppKit for NSScreen.
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let appKitPoint = CGPoint(x: cgOrigin.x, y: mainH - cgOrigin.y)
-        return NSScreen.screens.first { $0.frame.contains(appKitPoint) }
+        let appKitPoint = CoordinateSpace.appKit(fromCG: cgOrigin)
+        return CoordinateSpace.screen(containing: appKitPoint)
     }
 
     private func targetFrame(for layout: WindowLayout, on screen: NSScreen) -> CGRect {
@@ -217,8 +254,7 @@ final class WindowResizeService {
         lastCycleLayout = layout
         lastCycleIndex = index
         lastCycleFraction = fraction
-        let screenFrame = screen.frame
-        lastCycleCGFrame = CGRect(x: frame.minX, y: screenFrame.maxY - frame.maxY, width: frame.width, height: frame.height)
+        lastCycleCGFrame = CoordinateSpace.cg(fromAppKit: frame)
         return frame
     }
 
@@ -279,9 +315,7 @@ final class WindowResizeService {
         guard let frame = WindowManagerService.axFrame(of: axWindow) else { return nil }
 
         let screen = screenForWindow(axWindow) ?? NSScreen.main ?? NSScreen.screens[0]
-        let screenFrame = screen.frame
-        let vf = screen.visibleFrame
-        let area = CGRect(x: vf.minX, y: screenFrame.maxY - vf.maxY, width: vf.width, height: vf.height)   // CG coords
+        let area = CoordinateSpace.cg(fromAppKit: screen.visibleFrame)
 
         // Find the preset closest to the window's current size (it may not
         // be exactly on a step, e.g. the user resized it by hand), then move
@@ -301,8 +335,7 @@ final class WindowResizeService {
         WindowSnapUndo.shared.record(axWindow: axWindow, previous: frame, applied: applied)
         AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
 
-        let appKitFrame = CGRect(x: newFrameCG.minX, y: screenFrame.maxY - newFrameCG.maxY,
-                                  width: newFrameCG.width, height: newFrameCG.height)
+        let appKitFrame = CoordinateSpace.appKit(fromCG: newFrameCG)
         let percent = Int((nextFraction * 100).rounded())
         return (appKitFrame, "\(percent)%")
     }
@@ -344,7 +377,34 @@ final class WindowResizeService {
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &ref) == .success,
               let ref else { return nil }
         let axWindow = ref as! AXUIElement
+        return moveWindowToDisplay(axWindow, direction: direction)
+    }
 
+    /// Moves a specific, already-resolved window to the adjacent display —
+    /// same as `moveFrontmostWindowToDisplay(_:)` but operating on a window
+    /// captured up front (used by the ⌃⌥←/→ overlay, which pins its target
+    /// for the whole hold-cycle-release gesture).
+    @discardableResult
+    func moveWindowToDisplay(_ axWindow: AXUIElement, direction: DisplayDirection) -> (frame: CGRect, screen: NSScreen)? {
+        guard let result = displayMoveFrame(of: axWindow, direction: direction) else { return nil }
+        apply(frame: result.frame, to: axWindow, screen: result.screen)
+        return result
+    }
+
+    /// Preview-only variant of `moveWindowToDisplay(_:direction:)` — same
+    /// geometry, nothing actually moves. Used by the ⌃⌥←/→ overlay's live
+    /// preview when the cycle lands on "Previous/Next Display".
+    func previewDisplayMove(of axWindow: AXUIElement, direction: DisplayDirection) -> (frame: CGRect, screen: NSScreen)? {
+        displayMoveFrame(of: axWindow, direction: direction)
+    }
+
+    /// Shared geometry for a cross-display move: preserves the window's
+    /// position/size as a fraction of the source screen's visible area, so
+    /// e.g. a window docked to the left edge stays docked to the left edge
+    /// on the destination display, rescaled rather than snapped to a fixed
+    /// corner. The only place this math is computed — both the mutating
+    /// move and its preview call through here.
+    private func displayMoveFrame(of axWindow: AXUIElement, direction: DisplayDirection) -> (frame: CGRect, screen: NSScreen)? {
         let screens = NSScreen.screens.sorted { $0.frame.minX < $1.frame.minX }
         guard screens.count > 1,
               let oldScreen = screenForWindow(axWindow),
@@ -355,9 +415,7 @@ final class WindowResizeService {
 
         // Current frame in AppKit coords (bottom-left origin) — the same
         // space `visibleFrame`/`targetFrame`/`apply` already use.
-        let oldScreenFrame = oldScreen.frame
-        let currentAppKitFrame = CGRect(x: cgFrame.minX, y: oldScreenFrame.maxY - cgFrame.maxY,
-                                         width: cgFrame.width, height: cgFrame.height)
+        let currentAppKitFrame = CoordinateSpace.appKit(fromCG: cgFrame)
 
         let oldVF = oldScreen.visibleFrame
         let fracW = min(currentAppKitFrame.width / oldVF.width, 1)
@@ -368,14 +426,11 @@ final class WindowResizeService {
         let newVF = newScreen.visibleFrame
         let newFrame = CGRect(x: newVF.minX + fracX * newVF.width, y: newVF.minY + fracY * newVF.height,
                                width: fracW * newVF.width, height: fracH * newVF.height)
-        apply(frame: newFrame, to: axWindow, screen: newScreen)
         return (newFrame, newScreen)
     }
 
     private func apply(frame: CGRect, to axWindow: AXUIElement, screen: NSScreen) {
-        // Convert AppKit frame (bottom-left origin) → CG coords (top-left origin)
-        let screenFrame = screen.frame
-        let cgFrame = CGRect(x: frame.minX, y: screenFrame.maxY - frame.maxY, width: frame.width, height: frame.height)
+        let cgFrame = CoordinateSpace.cg(fromAppKit: frame)
         let previous = WindowManagerService.axFrame(of: axWindow)
         let applied = WindowManagerService.setAXFrame(cgFrame, of: axWindow)
         if let previous {

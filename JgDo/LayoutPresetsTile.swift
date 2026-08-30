@@ -16,7 +16,7 @@ struct LayoutPresetsTile: View {
         MetricTile(icon: "rectangle.3.group", title: "Layout Presets", value: "", progress: nil) {
             VStack(alignment: .leading, spacing: 8) {
                 if service.presets.isEmpty && !isNaming {
-                    Text("Save the current window arrangement's shape and reapply it later — to whatever apps happen to be open.")
+                    Text("Save a layout shape to reapply to any apps.")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -60,7 +60,7 @@ struct LayoutPresetsTile: View {
                     .lineLimit(1)
                 Text("\(preset.slots.count) slots")
                     .font(.system(size: 9.5))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             Button {
@@ -70,11 +70,12 @@ struct LayoutPresetsTile: View {
                     .font(.system(size: 15))
                     .foregroundStyle(Color.accentColor)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .help("Apply this layout to the current windows")
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+        .hoverRowBackground()
         .contextMenu {
             Button("Apply") { service.apply(preset) }
             Divider()

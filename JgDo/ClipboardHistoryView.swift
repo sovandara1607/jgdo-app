@@ -37,10 +37,21 @@ struct ClipboardHistoryView: View {
 
     @State private var service = ClipboardService.shared
     @State private var confirmClear = false
+    @State private var pinTipDismissed = false
     @FocusState private var searchFocused: Bool
 
     private var results: [ClipboardItem] {
         Array(service.filteredItems.prefix(60))
+    }
+
+    private var showPinTip: Bool {
+        !pinTipDismissed && TipsStore.shouldShow("clipboard-pin")
+            && service.items.count >= 5 && !service.items.contains(where: \.isPinned)
+    }
+
+    private func dismissPinTip() {
+        TipsStore.dismiss("clipboard-pin")
+        pinTipDismissed = true
     }
 
     var body: some View {
@@ -50,6 +61,10 @@ struct ClipboardHistoryView: View {
                              placeholder: "Search clipboard history…",
                              text: $s.searchText,
                              focused: $searchFocused)
+            if showPinTip {
+                TipBanner(message: "Pin frequently used items to keep them at the top.",
+                          actionTitle: "Got it", action: {}, onDismiss: dismissPinTip)
+            }
             list
             footer
         }
@@ -85,6 +100,11 @@ struct ClipboardHistoryView: View {
                             row(item, index: index, selected: index == service.selectedIndex)
                                 .contentShape(Rectangle())
                                 .onTapGesture { onPick(item) }
+                                // `onTapGesture` alone isn't reachable via VoiceOver's
+                                // activation gesture — this makes the row itself a real
+                                // accessibility button so double-tap-to-activate works.
+                                .accessibilityAddTraits(.isButton)
+                                .accessibilityAction { onPick(item) }
                         }
                     }
                 }
@@ -104,12 +124,23 @@ struct ClipboardHistoryView: View {
             Image(systemName: "clipboard")
                 .font(.system(size: 24, weight: .light))
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
             Text(service.isEnabled ? "Nothing copied yet" : "Clipboard history is off")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+            if !service.isEnabled {
+                Text("Turn it back on in Settings → Clipboard.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+            } else if ClipboardPrivacyService.shared.isPaused {
+                Text("Capture is paused — resume it in Settings → Clipboard.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 46)
+        .accessibilityElement(children: .combine)
     }
 
     private func row(_ item: ClipboardItem, index: Int, selected: Bool) -> some View {
@@ -157,10 +188,12 @@ struct ClipboardHistoryView: View {
             }
             .buttonStyle(.plain)
             .help(item.isPinned ? "Unpin" : "Pin")
+            .accessibilityHidden(true) // reachable instead via the row's named "Pin"/"Unpin" action, below
             if selected {
                 Image(systemName: "return")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
         }
         .padding(.horizontal, 9)
@@ -179,6 +212,30 @@ struct ClipboardHistoryView: View {
             Divider()
             Button("Delete", role: .destructive) { service.delete(item) }
         }
+        // A row-level accessibility element with a rich combined label reads
+        // far better via VoiceOver than the ~5 fragmented sub-elements
+        // (kind icon, shortcut hint, preview, source app, timestamp, pin
+        // button) it's built from — pin/copy/delete stay reachable as named
+        // actions instead of separate controls.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel(for: item))
+        .accessibilityAction(named: item.isPinned ? "Unpin" : "Pin") { service.togglePin(item) }
+        .accessibilityAction(named: "Copy") { service.copyToPasteboard(item) }
+        .accessibilityAction(named: "Delete") { service.delete(item) }
+    }
+
+    private func accessibilityLabel(for item: ClipboardItem) -> String {
+        let content: String
+        switch item.kind {
+        case .image:
+            content = (item.recognizedText?.isEmpty == false) ? "Image containing text: \(item.recognizedText!)" : "Image"
+        case .text, .file:
+            content = item.preview.isEmpty ? "Empty item" : item.preview
+        }
+        var parts = [content]
+        if let app = item.sourceAppName { parts.append("from \(app)") }
+        if item.isPinned { parts.append("pinned") }
+        return parts.joined(separator: ", ")
     }
 
     private func kindBadge(_ item: ClipboardItem) -> some View {

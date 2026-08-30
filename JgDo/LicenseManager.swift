@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import os
 
 enum LicensePlan: String {
     case free, pro, proPlus
@@ -15,27 +16,24 @@ enum LicensePlan: String {
 
 /// Validates and persists JgDo license keys, entirely offline.
 ///
-/// Keys are self-verifying: `{PLAN}-{XXXX}-{XXXX}-{CHECKSUM}`, where
-/// CHECKSUM is a truncated HMAC-SHA256 of PLAN+payload keyed by a secret
-/// shared with the website's generator (website/src/lib/license.ts). That
-/// lets the app verify a pasted key with no network call and no license
-/// server — at the standard tradeoff for this scheme: `secret` below ships
-/// inside the compiled binary, so anyone who extracts it (e.g. via
-/// `strings JgDo`) could mint their own valid keys. Acceptable for a
-/// low-price indie utility; move to server-side verification if that risk
-/// profile ever changes.
+/// Tokens are `base64(payload-JSON).base64(Ed25519 signature)` — signed by
+/// the website's `tools/license-signer` using a private key that never
+/// leaves that side. This app ships only the matching **public** key below,
+/// so extracting the compiled binary (e.g. via `strings JgDo`) can no
+/// longer be used to mint new valid licenses — the previous scheme signed
+/// with a symmetric HMAC secret embedded in the binary, which anyone who
+/// extracted it could reuse to forge keys. That scheme's issued keys are
+/// intentionally incompatible with this one (see `LicenseVerificationTests`);
+/// every existing license had to be reissued when this shipped.
 @Observable
 final class LicenseManager {
     static let shared = LicenseManager()
 
-    // ⚠️ MUST exactly match LICENSE_SECRET in website/.env.local (production
-    // env), or every key the website generates will fail to validate here.
-    // If you ever rotate the website's LICENSE_SECRET, update this to match —
-    // and every previously-issued key stops validating, so only rotate if
-    // you're prepared to reissue.
-    private static let secret = "2e23fcd37752d91ccc0ad624ce42e57937ac33e32d6054a2f00b07cd5f9d50ee"
-
-    private static let storageKey = "jgdo.licenseKey"
+    /// Ed25519 public key, paired with the private key held by
+    /// `tools/license-signer` (outside this app target, never committed —
+    /// see `tools/license-signer/README.md`). Safe to ship: a public key
+    /// only lets you verify signatures, never create them.
+    private static let publicKeyBase64 = "SkhEDZbt296k0FcI+3WCzhQAPKjFM2CYtujqAr75JlI="
 
     private(set) var plan: LicensePlan
     private(set) var licenseKey: String?
@@ -43,58 +41,72 @@ final class LicenseManager {
     var isPro: Bool { plan != .free }
 
     private init() {
-        if let stored = UserDefaults.standard.string(forKey: Self.storageKey),
-           let plan = Self.validate(stored) {
+        if let stored = KeychainLicenseStore.load(),
+           let payload = Self.verify(stored) {
             licenseKey = stored
-            self.plan = plan
+            plan = LicensePlan(rawValue: payload.plan) ?? .free
         } else {
             licenseKey = nil
             plan = .free
         }
     }
 
-    /// Validates and, on success, persists `key` as the active license.
+    /// Validates and, on success, persists `key` (Keychain, not
+    /// `UserDefaults`) as the active license.
     @discardableResult
     func activate(key: String) -> Bool {
-        let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard let plan = Self.validate(normalized) else { return false }
-        UserDefaults.standard.set(normalized, forKey: Self.storageKey)
+        let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let payload = Self.verify(normalized) else { return false }
+        guard KeychainLicenseStore.save(normalized) else {
+            // Signature checked out but we couldn't persist it — don't
+            // report success for a license that won't survive relaunch.
+            AppLog.license.error("License verified but Keychain save failed; not activating.")
+            return false
+        }
         licenseKey = normalized
-        self.plan = plan
+        plan = LicensePlan(rawValue: payload.plan) ?? .free
         return true
     }
 
     func deactivate() {
-        UserDefaults.standard.removeObject(forKey: Self.storageKey)
+        KeychainLicenseStore.clear()
         licenseKey = nil
         plan = .free
+        // Immediately, not just "until next launch": stop every subsystem
+        // that only makes sense while licensed — global hotkeys, ⌘-drag
+        // snapping, clipboard polling, battery monitoring, cleaning mode.
+        // Deactivation used to only clear the stored key; everything else
+        // kept running untouched until the app was quit and relaunched.
+        LicenseFeatureCoordinator.shared.stop()
     }
 
-    /// Parses `{PLAN}-{XXXX}-{XXXX}-{CHECKSUM}` and verifies the checksum.
-    /// Returns the encoded plan only if the key is well-formed AND the
-    /// checksum matches — never trust the plan code alone.
-    private static func validate(_ key: String) -> LicensePlan? {
-        let parts = key.split(separator: "-").map(String.init)
-        guard parts.count == 4 else { return nil }
-        let (planCode, p1, p2, checksum) = (parts[0], parts[1], parts[2], parts[3])
-        guard p1.count == 4, p2.count == 4, checksum.count == 4 else { return nil }
+    /// Splits `token` into its payload and signature halves, verifies the
+    /// signature against `publicKeyBase64` **before** trusting the decoded
+    /// JSON at all, then rejects anything with an unrecognized payload
+    /// version or plan code. `publicKeyBase64` is a parameter (defaulting
+    /// to the app's real key) purely so tests can verify against a
+    /// throwaway keypair without touching the production key.
+    static func verify(_ token: String, publicKeyBase64: String = LicenseManager.publicKeyBase64) -> LicensePayload? {
+        let parts = token.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2,
+              let payloadData = Data(base64Encoded: parts[0]),
+              let signatureData = Data(base64Encoded: parts[1]) else { return nil }
 
-        let plan: LicensePlan
-        switch planCode {
-        case "PRO0": plan = .pro
-        case "PLUS": plan = .proPlus
-        default: return nil
+        guard let publicKeyData = Data(base64Encoded: publicKeyBase64),
+              let publicKey = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKeyData) else {
+            AppLog.license.fault("The embedded license public key is malformed — no license can ever validate.")
+            return nil
         }
+        // Verify the signature over the raw payload bytes BEFORE decoding —
+        // decoding first and checking the signature after would mean a
+        // well-formed-but-unsigned/tampered payload gets parsed (and its
+        // fields potentially acted on) ahead of the trust check.
+        guard publicKey.isValidSignature(signatureData, for: payloadData) else { return nil }
 
-        let payload = p1 + p2
-        guard hmacChecksum(planCode + payload) == checksum else { return nil }
-        return plan
-    }
-
-    private static func hmacChecksum(_ input: String) -> String {
-        let key = SymmetricKey(data: Data(secret.utf8))
-        let mac = HMAC<SHA256>.authenticationCode(for: Data(input.utf8), using: key)
-        let hex = mac.map { String(format: "%02X", $0) }.joined()
-        return String(hex.prefix(4))
+        guard let payload = try? JSONDecoder().decode(LicensePayload.self, from: payloadData),
+              payload.version == LicensePayload.currentVersion,
+              LicensePlan(rawValue: payload.plan) != nil
+        else { return nil }
+        return payload
     }
 }

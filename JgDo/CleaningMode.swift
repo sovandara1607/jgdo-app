@@ -170,7 +170,12 @@ final class CleaningModeController {
         }
     }
 
-    deinit { countdownTimer?.invalidate() }
+    // Defense-in-depth: `shared` is a permanent singleton so this never
+    // actually runs today, but `stop()` is the one place that tears down
+    // the tap/run-loop-source pair, so it's what deinit should call too —
+    // matching HotkeyManager and WindowDragController — rather than only
+    // invalidating the timer and leaving a tap dangling if that ever changes.
+    deinit { stop() }
 }
 
 // MARK: - Overlay view

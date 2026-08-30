@@ -14,7 +14,7 @@ struct SnapGroupsTile: View {
         MetricTile(icon: "square.on.square", title: "Snap Groups", value: "", progress: nil) {
             VStack(alignment: .leading, spacing: 8) {
                 if service.groups.isEmpty && !isNaming {
-                    Text("Group the current windows and manage them together — move, resize, minimize, or close as one unit.")
+                    Text("Group windows to manage them as one unit.")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -58,7 +58,7 @@ struct SnapGroupsTile: View {
                     .lineLimit(1)
                 Text("\(group.members.count) windows")
                     .font(.system(size: 9.5))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             Button {
@@ -68,11 +68,12 @@ struct SnapGroupsTile: View {
                     .font(.system(size: 15))
                     .foregroundStyle(Color.accentColor)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .help("Restore this group")
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+        .hoverRowBackground()
         .contextMenu {
             Button("Restore") { service.restore(group) }
             if let screen = NSScreen.main {

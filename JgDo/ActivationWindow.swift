@@ -1,9 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// Blocks app functionality until a valid license key is entered. JgDo has
-/// no free tier — every install needs to be activated. Shown by AppDelegate
-/// in place of the normal status popover whenever `!LicenseManager.shared.isPro`.
 @MainActor
 enum ActivationWindow {
     private static var window: NSWindow?
@@ -40,13 +37,27 @@ struct ActivationView: View {
     @State private var key = ""
     @State private var error: String?
     @State private var license = LicenseManager.shared
+  
+    /// Set active, if it succeeds, it will form a brief confirmation (check whether which plan match)
+    @State private var activatedPlan: LicensePlan?
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "rectangle.split.2x1")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(Color.accentColor)
+            AppLogoView(size: 36)
 
+            if let activatedPlan {
+                successState(plan: activatedPlan)
+            } else {
+                form
+            }
+        }
+        .padding(28)
+        .frame(width: 420, height: 400)
+        .animation(.easeOut(duration: 0.2), value: activatedPlan != nil)
+    }
+
+    private var form: some View {
+        VStack(spacing: 16) {
             VStack(spacing: 4) {
                 Text("Activate JgDo")
                     .font(.system(size: 18, weight: .semibold))
@@ -58,11 +69,13 @@ struct ActivationView: View {
                     .frame(width: 300)
             }
 
-            TextField("PRO0-XXXX-XXXX-XXXX", text: $key)
+            TextField("Paste your license key", text: $key)
                 .textFieldStyle(.roundedBorder)
-                .font(.system(size: 13, design: .monospaced))
+                .font(.system(size: 11, design: .monospaced))
                 .multilineTextAlignment(.center)
-                .frame(width: 260)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: 300)
                 .onSubmit(activate)
 
             if let error {
@@ -93,8 +106,22 @@ struct ActivationView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
-        .padding(28)
-        .frame(width: 420, height: 400)
+    }
+
+    private func successState(plan: LicensePlan) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 34))
+                .foregroundStyle(.green)
+            Text("License Activated")
+                .font(.system(size: 16, weight: .semibold))
+            Text("Your key matched — you're on the \(plan.displayName) plan.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(width: 280)
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.96)))
     }
 
     private func activate() {
@@ -102,7 +129,10 @@ struct ActivationView: View {
         guard !trimmed.isEmpty else { return }
         if license.activate(key: trimmed) {
             error = nil
-            ActivationWindow.handleActivationSuccess()
+            activatedPlan = license.plan
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+                ActivationWindow.handleActivationSuccess()
+            }
         } else {
             error = "That license key isn't valid. Double-check for typos."
         }

@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import os
 
 /// Per-app window position/size memory, opt-in per app. When enabled for an
 /// app, its focused window's frame is captured the moment focus leaves it
@@ -73,8 +74,7 @@ final class WindowMemoryService {
         var ref: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &ref) == .success,
               let ref, let cgFrame = WindowManagerService.axFrame(of: ref as! AXUIElement) else { return }
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let appKit = CGRect(x: cgFrame.minX, y: mainH - cgFrame.maxY, width: cgFrame.width, height: cgFrame.height)
+        let appKit = CoordinateSpace.appKit(fromCG: cgFrame)
         entries[id] = Entry(appName: app.localizedName ?? id, x: appKit.minX, y: appKit.minY,
                              width: appKit.width, height: appKit.height)
         persist()
@@ -93,9 +93,7 @@ final class WindowMemoryService {
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &ref) == .success,
               let ref else { return }
         let axWindow = ref as! AXUIElement
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let cgFrame = CGRect(x: entry.frame.minX, y: mainH - entry.frame.maxY,
-                              width: entry.frame.width, height: entry.frame.height)
+        let cgFrame = CoordinateSpace.cg(fromAppKit: entry.frame)
         WindowManagerService.setAXFrame(cgFrame, of: axWindow)
     }
 
@@ -103,16 +101,22 @@ final class WindowMemoryService {
         if let ids = UserDefaults.standard.array(forKey: Self.enabledKey) as? [String] {
             enabledBundleIDs = Set(ids)
         }
-        if let data = UserDefaults.standard.data(forKey: Self.entriesKey),
-           let decoded = try? JSONDecoder().decode([String: Entry].self, from: data) {
-            entries = decoded
+        if let data = UserDefaults.standard.data(forKey: Self.entriesKey) {
+            do {
+                entries = try JSONDecoder().decode([String: Entry].self, from: data)
+            } catch {
+                AppLog.general.error("Couldn't decode remembered window positions: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
     private func persist() {
         UserDefaults.standard.set(Array(enabledBundleIDs), forKey: Self.enabledKey)
-        if let data = try? JSONEncoder().encode(entries) {
+        do {
+            let data = try JSONEncoder().encode(entries)
             UserDefaults.standard.set(data, forKey: Self.entriesKey)
+        } catch {
+            AppLog.general.error("Couldn't save remembered window positions: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

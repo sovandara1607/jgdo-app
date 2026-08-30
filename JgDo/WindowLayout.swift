@@ -1,7 +1,7 @@
 
 import Foundation
 
-enum WindowLayout: String, CaseIterable {
+enum WindowLayout: String, CaseIterable, Codable {
     case leftHalf    = "Left Half"
     case rightHalf   = "Right Half"
     case topHalf     = "Top Half"

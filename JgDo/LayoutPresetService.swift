@@ -23,8 +23,8 @@ final class LayoutPresetService {
 
     func reload() {
         let ctx = Persistence.shared.context
-        presets = (try? ctx.fetch(FetchDescriptor<LayoutPreset>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
+        presets = ctx.fetchLogged(FetchDescriptor<LayoutPreset>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]), using: AppLog.workspace)
     }
 
     /// Captures the current on-screen windows (front-to-back z-order) as a
@@ -36,16 +36,18 @@ final class LayoutPresetService {
         guard !windows.isEmpty else { return nil }
 
         let vf = screen.visibleFrame
-        let screenFrame = screen.frame
         let ctx = Persistence.shared.context
         let preset = LayoutPreset(name: name)
         for (i, w) in windows.enumerated() {
-            // `fetchWindows()` bounds are CG coords (top-left origin) — flip
-            // to AppKit (bottom-left) the same way `WindowResizeService`
-            // does throughout, then express as a fraction of the visible
-            // frame so it's resolution/position independent.
-            let appKit = CGRect(x: w.bounds.minX, y: screenFrame.maxY - w.bounds.maxY,
-                                 width: w.bounds.width, height: w.bounds.height)
+            // `fetchWindows()` bounds are CG global coords (top-left
+            // origin) — flip to AppKit global space via `CoordinateSpace`
+            // (always keyed off the primary screen, never `screen.frame`
+            // itself — `screen` here can be `NSScreen.main`, the screen
+            // with keyboard focus, which is not necessarily the primary
+            // display CG/AX global coordinates are anchored to), then
+            // express as a fraction of the visible frame so it's
+            // resolution/position independent.
+            let appKit = CoordinateSpace.appKit(fromCG: w.bounds)
             let fraction = CGRect(x: (appKit.minX - vf.minX) / vf.width,
                                    y: (appKit.minY - vf.minY) / vf.height,
                                    width: appKit.width / vf.width,

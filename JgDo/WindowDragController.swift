@@ -31,6 +31,11 @@ final class WindowDragController {
 
     private let windowService = WindowManagerService()
     private var commandHeld = false
+    /// Holding ⌥ during a plain (no-⌘) drag temporarily bypasses window
+    /// magnetism for that gesture — the standard "disable snapping" modifier
+    /// convention, distinct from ⌘, which is already the *enable* modifier
+    /// for the separate "snap into available space" feature.
+    private var optionHeld = false
     private var session: DragSession?
     private var activeAnimator: SnapAnimator?
     /// Most recent drag cursor position — Tab presses don't carry a mouse
@@ -44,7 +49,10 @@ final class WindowDragController {
     private var cachedPickerCandidates: [WindowManagerService.WindowBounds] = []
     private var lastCacheScreen: NSScreen?
 
-    // Caching for resize mode
+    // Caching for magnetism's resize-mode obstacle lookup (plain, no-⌘
+    // drags) — the ⌘-path's own resize handling doesn't need a plain-rect
+    // obstacle cache (it resolves AXUIElements to actually resize
+    // neighbors, a different data shape), so this is magnetism-only.
     private var resizeTick = 0
     private var cachedResizeObstacles: [CGRect] = []
 
@@ -79,11 +87,20 @@ final class WindowDragController {
         /// gesture — it's positioned once near the drag's start and left in
         /// place, not repositioned every tick.
         var pickerShown = false
+        /// Magnetism's (plain, no-⌘ drag) pending snap target, in CG global
+        /// coords — shown as a live guide while dragging, committed on
+        /// release. Independent of `lastAvailableRect`, which is the
+        /// ⌘-held "snap into available space" feature's own pending target.
+        var magnetTarget: CGRect?
     }
 
     // MARK: Public
 
     func start() {
+        // Idempotent for the same reason as HotkeyManager.start() — see
+        // its comment. Without this guard, a duplicate start() call leaks
+        // a mach port + run-loop source pair every time it fires.
+        guard WindowDragController.live !== self else { return }
         WindowDragController.live = self
         createTap()
     }
@@ -182,7 +199,8 @@ final class WindowDragController {
     nonisolated private func handleMouseDragged(_ event: CGEvent) {
         let point = event.location
         let held = event.flags.contains(.maskCommand)
-        DispatchQueue.main.async { WindowDragController.live?.updateTracking(at: point, commandHeld: held) }
+        let alt = event.flags.contains(.maskAlternate)
+        DispatchQueue.main.async { WindowDragController.live?.updateTracking(at: point, commandHeld: held, optionHeld: alt) }
     }
 
     nonisolated private func handleMouseUp(_ event: CGEvent) {
@@ -192,7 +210,11 @@ final class WindowDragController {
 
     nonisolated private func handleFlagsChanged(_ event: CGEvent) {
         let held = event.flags.contains(.maskCommand)
-        DispatchQueue.main.async { WindowDragController.live?.commandHeld = held }
+        let alt = event.flags.contains(.maskAlternate)
+        DispatchQueue.main.async {
+            WindowDragController.live?.commandHeld = held
+            WindowDragController.live?.optionHeld = alt
+        }
     }
 
     nonisolated private func handleKeyDown(_ event: CGEvent) {
@@ -248,8 +270,9 @@ final class WindowDragController {
         abs(a.minX - b.minX) + abs(a.minY - b.minY) + abs(a.width - b.width) + abs(a.height - b.height)
     }
 
-    private func updateTracking(at point: CGPoint, commandHeld: Bool) {
+    private func updateTracking(at point: CGPoint, commandHeld: Bool, optionHeld: Bool) {
         self.commandHeld = commandHeld
+        self.optionHeld = optionHeld
         lastCursorPoint = point
         guard var s = session else { return }
         defer { session = s }
@@ -261,6 +284,7 @@ final class WindowDragController {
                 s.lastAvailableRect = nil
                 s.pickerShown = false
             }
+            updateMagnetism(session: &s, at: point)
             return
         }
 
@@ -375,6 +399,100 @@ final class WindowDragController {
         }
     }
 
+    /// Window Magnetism: runs on every plain (no-⌘) drag tick, gated only
+    /// by the Settings toggle and the ⌥ bypass modifier — unlike the ⌘-path
+    /// above, there's no separate feature-enable modifier to hold, since
+    /// this is meant to be ambient. Shows a live guide as an edge nears a
+    /// magnet point (screen bounds or another window's edge, both inset by
+    /// the same tiling gap hotkey-snapping uses) and records the pending
+    /// target on the session; the actual snap is only ever applied once, on
+    /// mouse-up (`endTracking`) — see `WindowMagnetismEngine`'s doc comment
+    /// for why this doesn't live-write the frame every tick the way the
+    /// ⌘-path's obstacle detection does (it would fight the OS's own live
+    /// drag tracking).
+    private func updateMagnetism(session s: inout DragSession, at point: CGPoint) {
+        guard AppSettings.magnetismEnabled, !optionHeld else {
+            if s.magnetTarget != nil { s.magnetTarget = nil; SnapPreviewOverlay.shared.hidePersistent() }
+            return
+        }
+        guard let liveFrame = WindowManagerService.axFrame(of: s.axWindow), liveFrame != s.lastLiveFrame else { return }
+        s.lastLiveFrame = liveFrame
+
+        if s.mode == nil {
+            s.mode = SnapEngine.classify(originalFrame: s.originalFrame, liveFrame: liveFrame)
+        }
+        guard let mode = s.mode, let (screen, bounds) = screenAndBounds(forCGPoint: point) else { return }
+        let gap = CGFloat(AppSettings.edgeGap)
+        let distance = CGFloat(AppSettings.magnetismDistance)
+
+        let target: CGRect?
+        switch mode {
+        case .move:
+            moveTick += 1
+            let screenChanged = lastCacheScreen != screen
+            if moveTick % 4 == 0 || cachedObstacles.isEmpty || screenChanged {
+                let allWindows = windowService.fetchWindowBounds()
+                    .filter { isOtherWindow($0.windowID, pid: $0.pid, session: s) }
+                cachedObstacles = allWindows.map { $0.bounds }
+                cachedPickerCandidates = allWindows
+                lastCacheScreen = screen
+            }
+            if let origin = WindowMagnetismEngine.snappedOrigin(
+                for: liveFrame, candidates: cachedObstacles, screenBounds: bounds,
+                distance: distance, gap: gap
+            ) {
+                target = CGRect(origin: origin, size: liveFrame.size)
+            } else {
+                target = nil
+            }
+
+        case .resize:
+            resizeTick += 1
+            if resizeTick % 4 == 0 || cachedResizeObstacles.isEmpty {
+                cachedResizeObstacles = windowService.fetchWindowBounds()
+                    .filter { isOtherWindow($0.windowID, pid: $0.pid, session: s) }
+                    .map { $0.bounds }
+            }
+            if let move = SnapEngine.movedEdges(from: s.originalFrame, to: liveFrame).first,
+               let snapped = WindowMagnetismEngine.snappedEdge(
+                   move.edge, frame: liveFrame, candidates: cachedResizeObstacles, screenBounds: bounds,
+                   distance: distance, gap: gap
+               ) {
+                target = resizedFrame(liveFrame, edge: move.edge, newPosition: snapped)
+            } else {
+                target = nil
+            }
+        }
+
+        guard let target else {
+            if s.magnetTarget != nil { s.magnetTarget = nil; SnapPreviewOverlay.shared.hidePersistent() }
+            return
+        }
+        if s.magnetTarget == nil || !target.approximatelyEqual(to: s.magnetTarget!) {
+            fireHaptic()
+        }
+        s.magnetTarget = target
+        SnapPreviewOverlay.shared.showPersistent(primary: appKitFrame(fromCG: target), guide: nil, on: screen)
+    }
+
+    /// Applies a single edge's new position to `frame`, keeping the
+    /// opposite edge fixed — the resize-mode counterpart to a move's
+    /// whole-origin translation.
+    private func resizedFrame(_ frame: CGRect, edge: SnapEngine.Edge, newPosition: CGFloat) -> CGRect {
+        switch edge {
+        case .left:
+            let newWidth = frame.maxX - newPosition
+            return CGRect(x: newPosition, y: frame.minY, width: max(newWidth, 1), height: frame.height)
+        case .right:
+            return CGRect(x: frame.minX, y: frame.minY, width: max(newPosition - frame.minX, 1), height: frame.height)
+        case .top:
+            let newHeight = frame.maxY - newPosition
+            return CGRect(x: frame.minX, y: newPosition, width: frame.width, height: max(newHeight, 1))
+        case .bottom:
+            return CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: max(newPosition - frame.minY, 1))
+        }
+    }
+
     /// Drives the `DragTargetPickerOverlay`'s selection/search while a move
     /// drag is in progress: Tab/arrows move the highlighted candidate,
     /// Delete removes the last search character, and any other typed
@@ -436,8 +554,23 @@ final class WindowDragController {
         defer { session = nil }
         SnapPreviewOverlay.shared.hidePersistent()
         DragTargetPickerOverlay.shared.hide()
-        guard let s = session, commandHeld, s.mode == .move, let target = s.lastAvailableRect,
-              let (screen, _) = screenAndBounds(forCGPoint: point) else { return }
+        guard let s = session, let (screen, _) = screenAndBounds(forCGPoint: point) else { return }
+
+        // Exactly one of these can apply for a given release: the ⌘-held
+        // "snap into available space" target (move-mode only — resize-mode
+        // neighbors are already applied live, not committed here), or
+        // magnetism's pending target (move OR resize — magnetism never
+        // live-writes the frame, see `updateMagnetism`, so this is the only
+        // place its snap actually takes effect).
+        let target: CGRect?
+        if commandHeld, s.mode == .move {
+            target = s.lastAvailableRect
+        } else if !commandHeld {
+            target = s.magnetTarget
+        } else {
+            target = nil
+        }
+        guard let target else { return }
         fireHaptic()
         WindowSnapUndo.shared.record(axWindow: s.axWindow, previous: s.originalFrame, applied: target)
         animateSnap(of: s.axWindow, pid: s.pid, from: s.lastLiveFrame, to: target, on: screen)
@@ -478,18 +611,14 @@ final class WindowDragController {
     /// The screen under a CG (top-left origin) point, plus that screen's
     /// visible frame converted into the same CG coordinate space.
     private func screenAndBounds(forCGPoint point: CGPoint) -> (NSScreen, CGRect)? {
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let appKitPoint = CGPoint(x: point.x, y: mainH - point.y)
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(appKitPoint) }) ?? NSScreen.main else { return nil }
-        let vf = screen.visibleFrame
-        let screenFrame = screen.frame
-        let bounds = CGRect(x: vf.minX, y: screenFrame.maxY - vf.maxY, width: vf.width, height: vf.height)
+        let appKitPoint = CoordinateSpace.appKit(fromCG: point)
+        guard let screen = CoordinateSpace.screen(containing: appKitPoint) else { return nil }
+        let bounds = CoordinateSpace.cg(fromAppKit: screen.visibleFrame)
         return (screen, bounds)
     }
 
     private func appKitFrame(fromCG cg: CGRect) -> CGRect {
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        return CGRect(x: cg.minX, y: mainH - cg.maxY, width: cg.width, height: cg.height)
+        CoordinateSpace.appKit(fromCG: cg)
     }
 
     /// A thin guide rect (CG coords) along the dragged window's moving edge —

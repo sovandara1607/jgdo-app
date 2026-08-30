@@ -10,6 +10,7 @@ final class HotkeyManager {
     nonisolated(unsafe) var onResize: ((WindowLayout) -> Void)?
     nonisolated(unsafe) var onClipboard: (() -> Void)?
     nonisolated(unsafe) var onCommandPalette: (() -> Void)?
+    nonisolated(unsafe) var onWindowSwitcher: (() -> Void)?
     nonisolated(unsafe) var onShrinkWindow: (() -> Void)?
     nonisolated(unsafe) var onGrowWindow: (() -> Void)?
     nonisolated(unsafe) var onUndoSnap: (() -> Void)?
@@ -23,6 +24,29 @@ final class HotkeyManager {
     nonisolated(unsafe) var onRestoreAllParked: (() -> Void)?
     nonisolated(unsafe) var onCreateSnapGroup: (() -> Void)?
     nonisolated(unsafe) var onOrganizeWorkspace: (() -> Void)?
+    nonisolated(unsafe) var onFloatFrontmostWindow: (() -> Void)?
+    nonisolated(unsafe) var onNLWorkspace: (() -> Void)?
+    nonisolated(unsafe) var onShowLayoutPicker: (() -> Void)?
+    nonisolated(unsafe) var onLayoutFillOtherSide: (() -> Void)?
+
+    /// Fired on every keyDown for `.snapLeftHalf`/`.snapRightHalf` — the
+    /// ⌃⌥←/→ layout-cycle overlay, not the generic single-shot `onResize`
+    /// path other layout hotkeys use. Carries which arrow and whether this
+    /// is an OS auto-repeat (the controller throttles those itself).
+    nonisolated(unsafe) var onLayoutCycleStep: ((LayoutCycleFamily, Bool) -> Void)?
+    /// Fired from `flagsChanged` when Control or Option is released while
+    /// `layoutCycleActive` is true — commits the overlay's current selection.
+    nonisolated(unsafe) var onLayoutCycleModifiersReleased: (() -> Void)?
+    /// Fired when Escape is pressed while `layoutCycleActive` is true —
+    /// cancels without moving anything (hold-and-release mode only).
+    nonisolated(unsafe) var onLayoutCycleEscape: (() -> Void)?
+
+    /// Set by the layout-cycle controller for the duration of a ⌃⌥←/→
+    /// gesture. While true, the tap also watches `flagsChanged` for a
+    /// modifier release and intercepts Escape; while false (the vast
+    /// majority of the time) both are untouched passthrough, so this adds
+    /// no cost when the feature isn't actively in use.
+    nonisolated(unsafe) var layoutCycleActive = false
 
     nonisolated(unsafe) private var tap: CFMachPort?
     nonisolated(unsafe) private var tapSource: CFRunLoopSource?
@@ -40,6 +64,12 @@ final class HotkeyManager {
 
     
     func start() {
+        // Idempotent: a second start() while already live (whether the tap
+        // is up or a retry is pending) used to call createTap() again,
+        // overwriting `tap`/`tapSource` without disabling/removing the
+        // previous pair first — a leaked mach port + run-loop source per
+        // extra call. stop() first if you actually want to restart.
+        guard HotkeyManager.live !== self else { return }
         HotkeyManager.live = self
         createTap()
     }
@@ -61,7 +91,8 @@ final class HotkeyManager {
         guard AXIsProcessTrusted() else { scheduleRetry(); return }
 
         let mask = CGEventMask((1 << CGEventType.keyDown.rawValue) |
-                               (1 << CGEventType.keyUp.rawValue))
+                               (1 << CGEventType.keyUp.rawValue) |
+                               (1 << CGEventType.flagsChanged.rawValue))
 
         let newTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -75,6 +106,9 @@ final class HotkeyManager {
                         ?? Unmanaged.passRetained(event)
                 case .keyUp:
                     return HotkeyManager.live?.handleKeyUp(event)
+                        ?? Unmanaged.passRetained(event)
+                case .flagsChanged:
+                    return HotkeyManager.live?.handleFlagsChanged(event)
                         ?? Unmanaged.passRetained(event)
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
                     // The system can disable a tap under load; re-enable it.
@@ -116,11 +150,33 @@ final class HotkeyManager {
         let flags = event.flags
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
 
+        // Escape only means "cancel the layout overlay" while a
+        // hold-and-release session is actually up — otherwise it's every
+        // other app's Escape as normal.
+        if layoutCycleActive, code == 53 {
+            consumedKeys.insert(code)
+            let cb = onLayoutCycleEscape
+            DispatchQueue.main.async { cb?() }
+            return nil
+        }
+
         // Look the combo up in the user-configurable shortcut table
         // (no match = not one of ours → pass through).
         guard let match = ShortcutStore.lookup
             .first(where: { $0.combo.matches(code: code, flags: flags) })
         else { return Unmanaged.passRetained(event) }
+
+        // ⌃⌥←/→ drive the layout-cycle overlay, not the generic single-shot
+        // resize path — and unlike every other hotkey, holding the key
+        // should keep cycling (the controller throttles the repeat rate
+        // itself), so this bypasses the `!isRepeat` gate below.
+        if match.action == .snapLeftHalf || match.action == .snapRightHalf {
+            let family: LayoutCycleFamily = match.action == .snapLeftHalf ? .left : .right
+            consumedKeys.insert(code)
+            let cb = onLayoutCycleStep
+            DispatchQueue.main.async { cb?(family, isRepeat) }
+            return nil
+        }
 
         let action: () -> Void
         switch match.action {
@@ -130,6 +186,8 @@ final class HotkeyManager {
             let cb = onClipboard; action = { cb?() }
         case .commandPalette:
             let cb = onCommandPalette; action = { cb?() }
+        case .windowSwitcher:
+            let cb = onWindowSwitcher; action = { cb?() }
         case .shrinkWindow:
             let cb = onShrinkWindow; action = { cb?() }
         case .growWindow:
@@ -156,6 +214,14 @@ final class HotkeyManager {
             let cb = onCreateSnapGroup; action = { cb?() }
         case .organizeWorkspace:
             let cb = onOrganizeWorkspace; action = { cb?() }
+        case .floatFrontmostWindow:
+            let cb = onFloatFrontmostWindow; action = { cb?() }
+        case .nlWorkspace:
+            let cb = onNLWorkspace; action = { cb?() }
+        case .showLayoutPicker:
+            let cb = onShowLayoutPicker; action = { cb?() }
+        case .layoutFillOtherSide:
+            let cb = onLayoutFillOtherSide; action = { cb?() }
         default:
             guard let layout = match.action.layout else {
                 return Unmanaged.passRetained(event)
@@ -175,6 +241,21 @@ final class HotkeyManager {
         if consumedKeys.contains(code) {
             consumedKeys.remove(code)
             return nil   // swallow the orphan key-up → no system beep
+        }
+        return Unmanaged.passRetained(event)
+    }
+
+    /// Only does anything while a ⌃⌥←/→ overlay session is active — commits
+    /// the moment Control or Option lets go. Never swallows the event: this
+    /// is purely an observer, not a shortcut, so every other app keeps
+    /// seeing modifier changes normally.
+    nonisolated private func handleFlagsChanged(_ event: CGEvent) -> Unmanaged<CGEvent>? {
+        if layoutCycleActive {
+            let flags = event.flags
+            if !(flags.contains(.maskControl) && flags.contains(.maskAlternate)) {
+                let cb = onLayoutCycleModifiersReleased
+                DispatchQueue.main.async { cb?() }
+            }
         }
         return Unmanaged.passRetained(event)
     }

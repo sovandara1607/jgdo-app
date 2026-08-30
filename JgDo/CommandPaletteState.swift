@@ -16,6 +16,8 @@ final class CommandPaletteState {
         let appName: String
         let icon: NSImage?
         var windows: [WindowInfo]
+        /// nil for launch-suggestion/quick-action rows (sentinel pids).
+        var bundleID: String?
     }
 
     // MARK: - `>` quick actions
@@ -25,7 +27,7 @@ final class CommandPaletteState {
     /// so the palette can double as "type a window name" or "type a
     /// command" without a mode switch.
     enum QuickAction: String, CaseIterable {
-        case quit, hide, minimize
+        case quit, hide, minimize, float
 
         var verbCapitalized: String { rawValue.capitalized }
     }
@@ -35,10 +37,123 @@ final class CommandPaletteState {
         let targetName: String?
     }
 
-    var searchText = ""
+    var searchText = "" {
+        didSet {
+            guard searchText != oldValue else { return }
+            FileSearchService.shared.search(searchText)
+        }
+    }
     var groupIndex = 0
     var rowIndex = 0
     var focusSearch = false
+
+    // MARK: - File Search section (appended after window/launch groups)
+    //
+    // A third "virtual group" at the tail of the same flat, keyboard-
+    // navigable sequence `groupIndex`/`rowIndex` already walks — see
+    // `move(_:)`. Kept as separate state (not folded into `AppGroup`/
+    // `WindowInfo`) because files carry richer metadata (full path, kind,
+    // size) and more actions (Open/Reveal/Copy Path/Copy URL/Quick Look)
+    // than a window row's single "pick" action.
+    var fileResults: [FileSearchResult] { FileSearchService.shared.results }
+    /// True once the flat selection has moved past every app/launch group
+    /// into the file-results section.
+    var fileSectionActive = false
+    var fileIndex = 0
+    var selectedFile: FileSearchResult? {
+        guard fileSectionActive, fileResults.indices.contains(fileIndex) else { return nil }
+        return fileResults[fileIndex]
+    }
+
+    // MARK: - Layout commands ("safari left", "snap left", "tile left", …)
+    //
+    // A second "virtual group" tier, inserted between window/launch groups
+    // and the file-results tier (see `move(_:)`) — recognition-over-
+    // memorization: the user doesn't need to remember `⌥←` at all if they'd
+    // rather just type what they want.
+
+    /// One "Snap ‹App› ‹Layout›" row. `targetPID` is the real app to act on
+    /// (not a sentinel) — resolved the same way `>` quick actions resolve
+    /// their implicit target: an app named in the query if one matched,
+    /// else the current/MRU-front app.
+    struct PaletteCommand: Identifiable {
+        let id = UUID()
+        let layout: WindowLayout
+        let targetPID: pid_t
+        let targetAppName: String
+        let targetIcon: NSImage?
+        /// Nil when no hotkey is bound to this exact layout (some layouts,
+        /// like the corner tiles, share a modifier chord scheme that isn't
+        /// meaningfully "the" shortcut for display here) — the row just
+        /// omits the chip rather than showing a misleading blank.
+        let shortcutDisplay: String?
+
+        var label: String { "Snap \(targetAppName) \(layout.rawValue)" }
+    }
+
+    /// True when `commandResults` is showing recent commands rather than a
+    /// live keyword match — the view uses this to switch the section
+    /// header between "RECENT" and "WINDOW".
+    var commandResultsAreRecent: Bool {
+        searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Empty query: up to 5 recently-applied layout commands, for apps that
+    /// are still running. Non-empty query: at most one row — the single
+    /// layout keyword found in the text (see
+    /// `NaturalLanguageProviding.RuleBasedProvider.keywordLayouts`, reused
+    /// as-is rather than a second alias list), applied to whichever app the
+    /// query also names, or the current/MRU app if it names none. Doesn't
+    /// run at all in `>` mode — that already owns the row list for its own
+    /// verbs.
+    var commandResults: [PaletteCommand] {
+        guard parsedCommand == nil else { return [] }
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return recentCommandResults() }
+        guard let layout = Self.matchedLayout(in: q) else { return [] }
+
+        let lower = q.lowercased()
+        let target = allGroups.first(where: { lower.contains($0.appName.lowercased()) }) ?? allGroups.first
+        guard let target else { return [] }
+        return [makeCommand(layout: layout, target: target)]
+    }
+
+    private func recentCommandResults() -> [PaletteCommand] {
+        RecentCommandsStore.recent.compactMap { entry in
+            guard let target = allGroups.first(where: { $0.bundleID == entry.bundleID }) else { return nil }
+            return makeCommand(layout: entry.layout, target: target)
+        }
+    }
+
+    private func makeCommand(layout: WindowLayout, target: AppGroup) -> PaletteCommand {
+        let shortcut = HotkeyAction.allCases
+            .first(where: { $0.layout == layout })
+            .map { ShortcutStore.shared.combo(for: $0).display }
+        return PaletteCommand(layout: layout, targetPID: target.id, targetAppName: target.appName,
+                               targetIcon: target.icon, shortcutDisplay: shortcut)
+    }
+
+    /// First alias phrase (checked in the shared table's own longest-first
+    /// order) that appears anywhere in `text` — plain substring containment,
+    /// so "snap left"/"move left"/"tile left"/"window left" all resolve to
+    /// `.leftHalf` via the same bare "left" entry, with no separate alias
+    /// list to keep in sync. Not `private`: unit-testable in isolation
+    /// (`CommandPaletteStateTests`), same reasoning as `FileSearchService`'s
+    /// own "pure helpers" section — no AppKit/live-window dependency here.
+    static func matchedLayout(in text: String) -> WindowLayout? {
+        let lower = text.lowercased()
+        for (phrase, layout) in RuleBasedProvider.keywordLayouts where lower.contains(phrase) {
+            return layout
+        }
+        return nil
+    }
+
+    var commandSectionActive = false
+    var commandIndex = 0
+    var selectedCommand: PaletteCommand? {
+        guard commandSectionActive, commandResults.indices.contains(commandIndex) else { return nil }
+        return commandResults[commandIndex]
+    }
 
     private let service = WindowManagerService()
     private(set) var allGroups: [AppGroup] = []
@@ -59,8 +174,11 @@ final class CommandPaletteState {
     /// Keeping the URL from the scan itself — rather than re-deriving it
     /// later via the deprecated `NSWorkspace.fullPath(forApplication:)` —
     /// is also what `launchTargetURL(forAppName:)` hands back to
-    /// `AppDelegate` at pick time.
-    private static let installedApps: [(name: String, url: URL)] = {
+    /// `AppDelegate` at pick time. Not `private`: `NaturalLanguageService`/
+    /// `WorkspaceCommandExecutor` reuse this exact scan as their "which
+    /// apps actually exist" grounding data rather than re-scanning
+    /// `/Applications` a second time.
+    static let installedApps: [(name: String, url: URL)] = {
         let fm = FileManager.default
         let dirs = ["/Applications", "/System/Applications", "/System/Applications/Utilities",
                     NSHomeDirectory() + "/Applications"]
@@ -111,7 +229,8 @@ final class CommandPaletteState {
             seen.insert(pid)
         }
 
-        allGroups = orderedPIDs.compactMap { pid in
+        let favorites = AppSettings.favoriteAppBundleIDs
+        let unsorted = orderedPIDs.compactMap { pid -> AppGroup? in
             guard let ws = byPID[pid], let first = ws.first else { return nil }
             let runningApp = NSRunningApplication(processIdentifier: pid)
             let icon = runningApp?.icon ?? first.icon
@@ -121,11 +240,28 @@ final class CommandPaletteState {
             let expanded = BrowserTabService.isKnownBrowser(bundleID: runningApp?.bundleIdentifier)
                 ? ws.flatMap(expandTabs)
                 : ws
-            return AppGroup(id: pid, appName: first.appName, icon: icon, windows: expanded)
+            return AppGroup(id: pid, appName: first.appName, icon: icon, windows: expanded,
+                             bundleID: runningApp?.bundleIdentifier)
+        }
+        // Favorites float to the top, MRU order preserved otherwise.
+        allGroups = unsorted.sorted { g1, g2 in
+            let f1 = g1.bundleID.map(favorites.contains) ?? false
+            let f2 = g2.bundleID.map(favorites.contains) ?? false
+            return f1 && !f2
         }
         searchText = ""
         groupIndex = 0
         rowIndex = 0
+        commandSectionActive = false
+        commandIndex = 0
+        fileSectionActive = false
+        fileIndex = 0
+        // `searchText`'s `didSet` only fires the file search on an actual
+        // *change* — if it was already "" from the last time the palette
+        // closed, the line above is a no-op and recent files wouldn't
+        // refresh on reopen. Call explicitly so opening the palette always
+        // starts a fresh recent-files query.
+        FileSearchService.shared.search(searchText)
     }
 
     /// Splits one browser window into one row per open tab via the public
@@ -237,36 +373,186 @@ final class CommandPaletteState {
         }
     }
 
+    /// Toggles favorite status and re-sorts `allGroups` in place — doesn't
+    /// call `reload()`, which would wipe the current search text/selection.
+    func toggleFavoriteApp(bundleID: String) {
+        var favs = AppSettings.favoriteAppBundleIDs
+        if favs.contains(bundleID) { favs.remove(bundleID) } else { favs.insert(bundleID) }
+        AppSettings.favoriteAppBundleIDs = favs
+        allGroups.sort { g1, g2 in
+            let f1 = g1.bundleID.map(favs.contains) ?? false
+            let f2 = g2.bundleID.map(favs.contains) ?? false
+            return f1 && !f2
+        }
+    }
+
     var selectedWindow: WindowInfo? {
         let groups = filteredGroups
         guard groups.indices.contains(groupIndex), groups[groupIndex].windows.indices.contains(rowIndex) else { return nil }
         return groups[groupIndex].windows[rowIndex]
     }
 
-    /// Keeps `groupIndex`/`rowIndex` valid after the filtered set changes
-    /// (e.g. every keystroke in search).
+    /// Keeps `groupIndex`/`rowIndex` (and the command/file sections' own
+    /// indices) valid after the filtered set changes (e.g. every keystroke
+    /// in search). Typing always returns focus to the first non-empty tier
+    /// in the sequence — window/launch groups, then the (at most one)
+    /// layout command, then files — matching "windows first, everything
+    /// else reachable by explicitly arrowing past the end."
     func clampSelection() {
         let groups = filteredGroups
-        groupIndex = groups.isEmpty ? 0 : min(max(groupIndex, 0), groups.count - 1)
-        let rows = groups.indices.contains(groupIndex) ? groups[groupIndex].windows.count : 0
-        rowIndex = rows == 0 ? 0 : min(max(rowIndex, 0), rows - 1)
+        if !groups.isEmpty {
+            groupIndex = min(max(groupIndex, 0), groups.count - 1)
+            let rows = groups.indices.contains(groupIndex) ? groups[groupIndex].windows.count : 0
+            rowIndex = rows == 0 ? 0 : min(max(rowIndex, 0), rows - 1)
+            commandSectionActive = false
+            fileSectionActive = false
+        } else if !commandResults.isEmpty {
+            groupIndex = 0
+            rowIndex = 0
+            commandSectionActive = true
+            fileSectionActive = false
+        } else {
+            groupIndex = 0
+            rowIndex = 0
+            commandSectionActive = false
+            fileSectionActive = !fileResults.isEmpty
+        }
+        commandIndex = commandResults.isEmpty ? 0 : min(max(commandIndex, 0), commandResults.count - 1)
+        fileIndex = fileResults.isEmpty ? 0 : min(max(fileIndex, 0), fileResults.count - 1)
+    }
+
+    /// Tab — jumps straight to the next/previous app group's collapsed row,
+    /// skipping past however many windows the current group has. No-op
+    /// while browsing commands/files (those aren't grouped).
+    func jumpGroup(_ delta: Int) {
+        guard !commandSectionActive, !fileSectionActive else { return }
+        let groups = filteredGroups
+        guard !groups.isEmpty else { return }
+        groupIndex = (groupIndex + delta + groups.count) % groups.count
+        rowIndex = 0
     }
 
     /// Moves the selection by one row (`delta` is ±1 per key press). Stepping
     /// past the last window of the expanded group collapses it and expands
     /// the next group, landing on its first window (and symmetrically at the
-    /// top) — a single flat list, wrapping at either end.
+    /// top) — a single flat list, wrapping at either end. The (at most one)
+    /// layout command and file results, if any, are two more "virtual
+    /// group" tiers appended at the tail of that same circular sequence, in
+    /// that order (groups → command → files): stepping past the last window
+    /// group enters the command tier if present, else the file tier if
+    /// present, and symmetrically backward from the first group's first row.
+    /// With no command/file results, this is byte-identical to the
+    /// window-only behavior it replaces — every `hasCommands`/`hasFiles`
+    /// branch below just falls through to its neighbor when empty.
     func move(_ delta: Int) {
         let groups = filteredGroups
-        guard !groups.isEmpty else { return }
+        let hasCommands = !commandResults.isEmpty
+        let hasFiles = !fileResults.isEmpty
+
+        if fileSectionActive {
+            let newIndex = fileIndex + delta
+            if newIndex < 0 {
+                if hasCommands {
+                    fileSectionActive = false
+                    commandSectionActive = true
+                    commandIndex = commandResults.count - 1
+                } else if !groups.isEmpty {
+                    fileSectionActive = false
+                    groupIndex = groups.count - 1
+                    rowIndex = max(groups[groupIndex].windows.count - 1, 0)
+                } else {
+                    fileIndex = max(fileResults.count - 1, 0)
+                }
+            } else if newIndex >= fileResults.count {
+                if !groups.isEmpty {
+                    fileSectionActive = false
+                    groupIndex = 0
+                    rowIndex = 0
+                } else if hasCommands {
+                    fileSectionActive = false
+                    commandSectionActive = true
+                    commandIndex = 0
+                } else {
+                    fileIndex = 0
+                }
+            } else {
+                fileIndex = newIndex
+            }
+            return
+        }
+
+        if commandSectionActive {
+            let newIndex = commandIndex + delta
+            if newIndex < 0 {
+                if !groups.isEmpty {
+                    commandSectionActive = false
+                    groupIndex = groups.count - 1
+                    rowIndex = max(groups[groupIndex].windows.count - 1, 0)
+                } else if hasFiles {
+                    commandSectionActive = false
+                    fileSectionActive = true
+                    fileIndex = fileResults.count - 1
+                } else {
+                    commandIndex = max(commandResults.count - 1, 0)
+                }
+            } else if newIndex >= commandResults.count {
+                if hasFiles {
+                    commandSectionActive = false
+                    fileSectionActive = true
+                    fileIndex = 0
+                } else if !groups.isEmpty {
+                    commandSectionActive = false
+                    groupIndex = 0
+                    rowIndex = 0
+                } else {
+                    commandIndex = 0
+                }
+            } else {
+                commandIndex = newIndex
+            }
+            return
+        }
+
+        guard !groups.isEmpty else {
+            if hasCommands {
+                commandSectionActive = true
+                commandIndex = 0
+            } else if hasFiles {
+                fileSectionActive = true
+                fileIndex = 0
+            }
+            return
+        }
         guard groups.indices.contains(groupIndex) else { groupIndex = 0; rowIndex = 0; return }
 
         var newGroup = groupIndex
         var newRow = rowIndex + delta
         if newRow < 0 {
+            if groupIndex == 0 {
+                if hasFiles {
+                    fileSectionActive = true
+                    fileIndex = fileResults.count - 1
+                    return
+                } else if hasCommands {
+                    commandSectionActive = true
+                    commandIndex = commandResults.count - 1
+                    return
+                }
+            }
             newGroup = (newGroup - 1 + groups.count) % groups.count
             newRow = groups[newGroup].windows.count - 1
         } else if newRow >= groups[newGroup].windows.count {
+            if groupIndex == groups.count - 1 {
+                if hasCommands {
+                    commandSectionActive = true
+                    commandIndex = 0
+                    return
+                } else if hasFiles {
+                    fileSectionActive = true
+                    fileIndex = 0
+                    return
+                }
+            }
             newGroup = (newGroup + 1) % groups.count
             newRow = 0
         }

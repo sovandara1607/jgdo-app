@@ -18,3 +18,8 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# License signing key — must never be committed. Holds the Ed25519 private
+# key that signs license tokens; only its paired public key belongs in the
+# app (see JgDo/LicenseManager.swift and tools/license-signer/README.md).
+tools/license-signer/.keys/

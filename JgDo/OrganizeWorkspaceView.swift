@@ -34,11 +34,11 @@ struct OrganizeWorkspaceView: View {
             .controlSize(.small)
 
             HStack(spacing: 12) {
-                schematic(title: "CURRENT", frames: windows.map { ($0, $0.appKitFrame(mainHeight: mainHeight)) })
+                SchematicPreview(title: "CURRENT", frames: windows.map(\.appKitFrame), screen: screen)
                 Image(systemName: "arrow.right")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.tertiary)
-                schematic(title: "PROPOSED", frames: proposed)
+                SchematicPreview(title: "PROPOSED", frames: proposed.map(\.1), screen: screen)
             }
 
             HStack(spacing: 8) {
@@ -74,57 +74,12 @@ struct OrganizeWorkspaceView: View {
         .panelCard()
     }
 
-    private var mainHeight: CGFloat { NSScreen.screens.first?.frame.height ?? 0 }
-
-    private func schematic(title: String, frames: [(WindowInfo, CGRect)]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 8.5, weight: .semibold))
-                .tracking(0.4)
-                .foregroundStyle(.tertiary)
-            GeometryReader { geo in
-                let scaleX = geo.size.width / max(screen.visibleFrame.width, 1)
-                let scaleY = geo.size.height / max(screen.visibleFrame.height, 1)
-                ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
-                    ForEach(Array(frames.enumerated()), id: \.offset) { i, pair in
-                        let (_, frame) = pair
-                        let vf = screen.visibleFrame
-                        let boxWidth: CGFloat = max(frame.width * scaleX - 2, 2)
-                        let boxHeight: CGFloat = max(frame.height * scaleY - 2, 2)
-                        let centerX: CGFloat = (frame.minX - vf.minX + frame.width / 2) * scaleX
-                        let centerY: CGFloat = geo.size.height - (frame.minY - vf.minY + frame.height / 2) * scaleY
-                        let border = RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .strokeBorder(Color.accentColor, lineWidth: 1)
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.accentColor.opacity(0.35))
-                            .overlay(border)
-                            .frame(width: boxWidth, height: boxHeight)
-                            .position(x: centerX, y: centerY)
-                            .id(i)
-                    }
-                }
-                // `.position()` doesn't clip to the parent's bounds, so a
-                // window taller/wider than `screen.visibleFrame` (e.g. one
-                // that extends behind the menu bar) can push a box's
-                // computed center outside this schematic entirely — it was
-                // bleeding up into the title/tab row above. The schematic is
-                // just a miniature preview, so it should never paint outside
-                // its own rounded rect regardless of that math.
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(screen.visibleFrame.width / max(screen.visibleFrame.height, 1), contentMode: .fit)
-    }
 }
 
 extension WindowInfo {
     /// This window's CG bounds converted to AppKit coords — used for the
     /// "current" side of the Organize preview and to snapshot the "before"
-    /// frame for `OrganizeUndoService`.
-    func appKitFrame(mainHeight: CGFloat) -> CGRect {
-        CGRect(x: bounds.minX, y: mainHeight - bounds.maxY, width: bounds.width, height: bounds.height)
-    }
+    /// frame for `OrganizeUndoService`. Thin wrapper over `CoordinateSpace`
+    /// so every CG↔AppKit flip in the app goes through the one formula.
+    var appKitFrame: CGRect { CoordinateSpace.appKit(fromCG: bounds) }
 }

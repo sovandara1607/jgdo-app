@@ -37,6 +37,10 @@ struct ShortcutCheatSheetView: View {
                 .foregroundStyle(.tertiary)
             ForEach(actions) { action in
                 HStack {
+                    if let layout = action.layout {
+                        LayoutPreviewIcon(layout: layout)
+                            .frame(width: 20, height: 13)
+                    }
                     Text(action.label)
                         .font(.system(size: 12))
                         .foregroundStyle(.primary)

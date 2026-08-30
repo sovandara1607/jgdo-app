@@ -3,6 +3,7 @@ import AppKit
 import Darwin
 import IOKit
 import IOKit.ps
+import os
 import SystemConfiguration
 
 /// One network interface's current throughput, for the Network detail tab —
@@ -334,7 +335,11 @@ final class SystemStatusFetcher {
             .volumeTotalCapacityKey,
             .volumeAvailableCapacityForImportantUsageKey
         ]
-        guard let v = try? URL(fileURLWithPath: "/").resourceValues(forKeys: keys) else {
+        let v: URLResourceValues
+        do {
+            v = try URL(fileURLWithPath: "/").resourceValues(forKeys: keys)
+        } catch {
+            AppLog.general.error("Couldn't read disk volume capacity: \(error.localizedDescription, privacy: .public)")
             return (0, 0)
         }
         let tot  = UInt64(v.volumeTotalCapacity ?? 0)

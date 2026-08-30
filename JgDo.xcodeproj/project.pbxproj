@@ -3,21 +3,50 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 100;
+	objectVersion = 110;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		C442D00E933BFDB3EF74F016 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D1E0821296304142E7133BE0 /* Sparkle */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		64F660A865AB67D646A079D3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 47467EB42FEEFB52000660F7 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 47467EBB2FEEFB52000660F7;
+			remoteInfo = JgDo;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		47467EBC2FEEFB52000660F7 /* JgDo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JgDo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC46DEF69E051E1F897E3CE7 /* JgDoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JgDoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		2113F7B81979AA2F7A878D59 /* Exceptions for "JgDo" folder in "JgDo" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 47467EBB2FEEFB52000660F7 /* JgDo */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		47467EBE2FEEFB52000660F7 /* JgDo */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				2113F7B81979AA2F7A878D59 /* Exceptions for "JgDo" folder in "JgDo" target */,
+			);
 			path = JgDo;
+			sourceTree = "<group>";
+		};
+		E86E206918FCC9D3A712471A /* JgDoTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = JgDoTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -29,6 +58,11 @@
 				C442D00E933BFDB3EF74F016 /* Sparkle in Frameworks */,
 			);
 		};
+		49AA15894D47C11DD286215D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -36,6 +70,7 @@
 			isa = PBXGroup;
 			children = (
 				47467EBE2FEEFB52000660F7 /* JgDo */,
+				E86E206918FCC9D3A712471A /* JgDoTests */,
 				47467EBD2FEEFB52000660F7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -44,6 +79,7 @@
 			isa = PBXGroup;
 			children = (
 				47467EBC2FEEFB52000660F7 /* JgDo.app */,
+				AC46DEF69E051E1F897E3CE7 /* JgDoTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -72,6 +108,27 @@
 			productReference = 47467EBC2FEEFB52000660F7 /* JgDo.app */;
 			productType = "com.apple.product-type.application";
 		};
+		6CE3136E22F949D63C3786F0 /* JgDoTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 55B3837E89234F30DE802E77 /* Build configuration list for PBXNativeTarget "JgDoTests" */;
+			buildPhases = (
+				3990E1858AAE0EC2A21E88E8 /* Sources */,
+				49AA15894D47C11DD286215D /* Frameworks */,
+				0B9280AC62460DDD0331A8BB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CF2BA8DB23D050495CC5018D /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E86E206918FCC9D3A712471A /* JgDoTests */,
+			);
+			name = JgDoTests;
+			productName = JgDoTests;
+			productReference = AC46DEF69E051E1F897E3CE7 /* JgDoTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -84,6 +141,10 @@
 				TargetAttributes = {
 					47467EBB2FEEFB52000660F7 = {
 						CreatedOnToolsVersion = 27.0;
+					};
+					6CE3136E22F949D63C3786F0 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 47467EBB2FEEFB52000660F7;
 					};
 				};
 			};
@@ -105,11 +166,17 @@
 			projectRoot = "";
 			targets = (
 				47467EBB2FEEFB52000660F7 /* JgDo */,
+				6CE3136E22F949D63C3786F0 /* JgDoTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		0B9280AC62460DDD0331A8BB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 		47467EBA2FEEFB52000660F7 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
@@ -118,6 +185,11 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		3990E1858AAE0EC2A21E88E8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 		47467EB82FEEFB52000660F7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
@@ -125,7 +197,53 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		CF2BA8DB23D050495CC5018D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 47467EBB2FEEFB52000660F7 /* JgDo */;
+			targetProxy = 64F660A865AB67D646A079D3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		13FFBDD240B1F2965792C794 /* Debug configuration for PBXNativeTarget "JgDoTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = 9CYU6Q852X;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.4;
+				PRODUCT_BUNDLE_IDENTIFIER = lonewolf.JgDoTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JgDo.app/Contents/MacOS/JgDo";
+			};
+			name = Debug;
+		};
+		3BE94719D81C0DAB9F4CD2F5 /* Release configuration for PBXNativeTarget "JgDoTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = 9CYU6Q852X;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.4;
+				PRODUCT_BUNDLE_IDENTIFIER = lonewolf.JgDoTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JgDo.app/Contents/MacOS/JgDo";
+			};
+			name = Release;
+		};
 		47467EC52FEEFB53000660F7 /* Debug configuration for PBXProject "JgDo" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -273,6 +391,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 0.1.4;
+				"MARKETING_VERSION[sdk=macosx*]" = 0.1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = lonewolf.JgDo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -313,6 +432,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 0.1.4;
+				"MARKETING_VERSION[sdk=macosx*]" = 0.1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = lonewolf.JgDo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -340,6 +460,14 @@
 			buildConfigurations = (
 				47467EC82FEEFB53000660F7 /* Debug configuration for PBXNativeTarget "JgDo" */,
 				47467EC92FEEFB53000660F7 /* Release configuration for PBXNativeTarget "JgDo" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		55B3837E89234F30DE802E77 /* Build configuration list for PBXNativeTarget "JgDoTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				13FFBDD240B1F2965792C794 /* Debug configuration for PBXNativeTarget "JgDoTests" */,
+				3BE94719D81C0DAB9F4CD2F5 /* Release configuration for PBXNativeTarget "JgDoTests" */,
 			);
 			defaultConfigurationName = Release;
 		};

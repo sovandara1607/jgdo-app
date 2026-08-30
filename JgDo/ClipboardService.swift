@@ -21,6 +21,7 @@ final class ClipboardService {
 
     private init() {
         reload()
+        backfillContentHashesIfNeeded()
     }
 
     // MARK: Lifecycle
@@ -51,16 +52,18 @@ final class ClipboardService {
     private func poll() {
         let pb = NSPasteboard.general
         guard pb.changeCount != lastChangeCount else { return }
-        // Track the change count even while disabled, so re-enabling doesn't
-        // retroactively record whatever was copied in the meantime.
+        // Track the change count even while disabled/paused, so resuming
+        // doesn't retroactively record whatever was copied in the meantime.
         lastChangeCount = pb.changeCount
         guard isEnabled else { return }
+        guard !ClipboardPrivacyService.shared.isPaused else { return }
         // Respect password managers / marked-transient content.
         guard pb.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.TransientType")) != true,
               pb.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) != true
         else { return }
 
         let front = NSWorkspace.shared.frontmostApplication
+        guard !ClipboardPrivacyService.shared.isExcluded(bundleID: front?.bundleIdentifier) else { return }
         let text = pb.string(forType: .string)
         let imageData = pb.data(forType: .png) ?? tiffAsPNG(pb)
 
@@ -89,12 +92,14 @@ final class ClipboardService {
             item = nil
         }
         guard let item else { return }
+        item.recomputeContentHash()
 
-        // Re-copying the most recent entry just bumps it instead of duplicating.
-        // (Compare actual content — previews collide, e.g. every image is "Image".)
-        if let newest = items.max(by: { $0.createdAt < $1.createdAt }),
-           isDuplicate(newest, of: item) {
-            newest.createdAt = Date()
+        // Re-copying ANY existing entry (not just the most recent one) just
+        // bumps it to the top instead of storing a duplicate — content-hash
+        // based, so it catches "copied A, then B, then A again" too, not
+        // only immediately-consecutive re-copies.
+        if let existing = items.first(where: { $0.contentHash == item.contentHash }) {
+            existing.createdAt = Date()
             Persistence.shared.save()
             reload()
             return
@@ -119,15 +124,6 @@ final class ClipboardService {
         }
     }
 
-    private func isDuplicate(_ existing: ClipboardItem, of new: ClipboardItem) -> Bool {
-        guard existing.kind == new.kind else { return false }
-        switch new.kind {
-        case .text:  return existing.text == new.text
-        case .image: return existing.imageData == new.imageData
-        case .file:  return existing.filePaths == new.filePaths
-        }
-    }
-
     /// A single URL with no surrounding prose (what browsers add next to a
     /// copied image) — not text worth recording on its own.
     private func isLoneURL(_ text: String) -> Bool {
@@ -143,22 +139,68 @@ final class ClipboardService {
         return rep.representation(using: .png, properties: [:])
     }
 
-    /// Delete the oldest unpinned entries beyond the history limit.
+    /// Deletes, in order: unpinned entries past the configured retention
+    /// period, unpinned entries pushing total storage over its cap, then
+    /// the oldest unpinned entries beyond the count limit. All three are
+    /// independent policies — an item can be removed by whichever fires
+    /// first, and a save/reload after each keeps `items` accurate for the
+    /// checks that follow.
     private func trim() {
         let ctx = Persistence.shared.context
-        var all = (try? ctx.fetch(FetchDescriptor<ClipboardItem>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
+        var all = ctx.fetchLogged(FetchDescriptor<ClipboardItem>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]), using: AppLog.clipboard)
+
+        let expired = ClipboardPrivacyService.shared.expiredItems(in: all)
+        if !expired.isEmpty {
+            let expiredIDs = Set(expired.map(\.persistentModelID))
+            for item in expired { ctx.delete(item) }
+            all.removeAll { expiredIDs.contains($0.persistentModelID) }
+        }
+
+        let overCap = ClipboardPrivacyService.shared.itemsExceedingStorageCap(in: all)
+        if !overCap.isEmpty {
+            let overCapIDs = Set(overCap.map(\.persistentModelID))
+            for item in overCap { ctx.delete(item) }
+            all.removeAll { overCapIDs.contains($0.persistentModelID) }
+        }
+
         all.removeAll(where: \.isPinned)
         guard all.count > limit else { return }
         for old in all.dropFirst(limit) { ctx.delete(old) }
+    }
+
+    /// One-time, off-main backfill for `contentHash` on rows captured
+    /// before that field existed — hashes may include image bytes, so this
+    /// deliberately hops off the main actor rather than blocking it the
+    /// way a synchronous loop over every history item would.
+    private func backfillContentHashesIfNeeded() {
+        let missing = items.filter { $0.contentHash == nil }
+        guard !missing.isEmpty else { return }
+        struct Pending { let id: PersistentIdentifier; let kind: ClipboardItem.Kind; let text: String?; let imageData: Data?; let filePaths: [String] }
+        let pending = missing.map {
+            Pending(id: $0.persistentModelID, kind: $0.kind, text: $0.text, imageData: $0.imageData, filePaths: $0.filePaths)
+        }
+        Task.detached(priority: .utility) {
+            let hashes = pending.map { p in
+                (p.id, ClipboardItem.computeContentHash(kind: p.kind, text: p.text, imageData: p.imageData, filePaths: p.filePaths))
+            }
+            await MainActor.run {
+                let ctx = Persistence.shared.context
+                for (id, hash) in hashes {
+                    (ctx.model(for: id) as? ClipboardItem)?.contentHash = hash
+                }
+                Persistence.shared.save()
+                ClipboardService.shared.reload()
+            }
+        }
     }
 
     // MARK: Queries
 
     func reload() {
         let ctx = Persistence.shared.context
-        let fetched = (try? ctx.fetch(FetchDescriptor<ClipboardItem>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
+        let fetched = ctx.fetchLogged(FetchDescriptor<ClipboardItem>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]), using: AppLog.clipboard)
         // Pinned entries float to the top, newest-first within each group.
         items = fetched.filter(\.isPinned) + fetched.filter { !$0.isPinned }
     }
@@ -177,8 +219,11 @@ final class ClipboardService {
 
     func togglePin(_ item: ClipboardItem) {
         item.isPinned.toggle()
+        let nowPinned = item.isPinned
         Persistence.shared.save()
         reload()
+        ActionToastCenter.shared.show(nowPinned ? "Clipboard Item Pinned" : "Clipboard Item Unpinned",
+                                       icon: nowPinned ? "pin.fill" : "pin", duration: 1.1)
     }
 
     func delete(_ item: ClipboardItem) {

@@ -23,16 +23,23 @@ struct MenuBarQuickPanel: View {
     @State private var focus = FocusModeService.shared
     @State private var cleaning = CleaningModeController.shared
     @AppStorage(AppSettings.cleaningDurationKey) private var cleaningDuration: Int = 60
+    @AppStorage(AppSettings.dashboardShowCPUKey) private var showCPU = true
+    @AppStorage(AppSettings.dashboardShowMemoryKey) private var showMemory = true
     /// Keeps the sliders live while the panel is open, same as
     /// `MonitorControlsTile` — otherwise hardware volume/brightness keys
     /// pressed while this is open wouldn't be reflected until it's reopened.
     @State private var pollTimer: Timer?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var lastWorkspaceName: String? { WorkspaceService.shared.workspaces.first?.name }
     private var recentClipboardItems: [ClipboardItem] { Array(clipboard.filteredItems.prefix(3)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if showCPU || showMemory {
+                performanceRow
+                divider
+            }
             if system.status.hasBattery {
                 batteryRow
             }
@@ -40,10 +47,10 @@ struct MenuBarQuickPanel: View {
             divider
 
             if monitor.brightnessAvailable {
-                sliderRow(icon: "sun.max.fill", value: Double(monitor.brightness)) {
+                sliderRow(icon: "sun.max.fill", label: "Brightness", value: Double(monitor.brightness)) {
                     monitor.setBrightness(Float($0))
                 }
-                .animation(.linear(duration: 0.1), value: monitor.brightness)
+                .animation(reduceMotion ? nil : .linear(duration: 0.1), value: monitor.brightness)
             }
             if monitor.volumeAvailable {
                 HStack(spacing: 8) {
@@ -56,12 +63,16 @@ struct MenuBarQuickPanel: View {
                             .frame(width: 16)
                     }
                     .buttonStyle(.plain)
+                    .help(monitor.isMuted ? "Unmute" : "Mute")
+                    .accessibilityLabel(monitor.isMuted ? "Unmute" : "Mute")
                     Slider(value: Binding(
                         get: { Double(monitor.isMuted ? 0 : monitor.volume) },
                         set: { monitor.setVolume(Float($0)) }
                     ), in: 0...1)
+                    .accessibilityLabel("Volume")
+                    .accessibilityValue("\(Int((monitor.isMuted ? 0 : monitor.volume) * 100)) percent")
                 }
-                .animation(.linear(duration: 0.1), value: monitor.volume)
+                .animation(reduceMotion ? nil : .linear(duration: 0.1), value: monitor.volume)
             }
             if monitor.brightnessAvailable || monitor.volumeAvailable {
                 divider
@@ -103,6 +114,28 @@ struct MenuBarQuickPanel: View {
         .onDisappear {
             pollTimer?.invalidate()
             pollTimer = nil
+        }
+    }
+
+    // MARK: Performance (Mini Dashboard)
+
+    /// CPU/Memory at a glance — reuses `RingGauge`, the exact same compact
+    /// gauge the main status popover's Overview tab already renders, so
+    /// this doesn't introduce a second visual language for the same data.
+    /// No new polling either: `SystemMonitor` is already sampling whenever
+    /// this panel is open (`setQuickPanelVisible`, called by
+    /// `AppDelegate.showQuickPanel()`) — these rows just read `system.status`.
+    private var performanceRow: some View {
+        // `spacing: 0` + each gauge's own `maxWidth: .infinity` (inside
+        // `RingGauge`) splits the row evenly — same layout the main
+        // popover's `ringGrid` uses for its (three-gauge) row.
+        HStack(spacing: 0) {
+            if showCPU {
+                RingGauge(icon: "cpu", label: "CPU", percent: system.status.cpuPercent / 100, color: Theme.accent)
+            }
+            if showMemory {
+                RingGauge(icon: "memorychip", label: "Memory", percent: system.status.memPercent, color: Theme.accent)
+            }
         }
     }
 
@@ -180,6 +213,8 @@ struct MenuBarQuickPanel: View {
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("Pastes this clipboard item.")
             }
         }
     }
@@ -196,13 +231,16 @@ struct MenuBarQuickPanel: View {
         Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
     }
 
-    private func sliderRow(icon: String, value: Double, onChange: @escaping (Double) -> Void) -> some View {
+    private func sliderRow(icon: String, label: String, value: Double, onChange: @escaping (Double) -> Void) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
+                .accessibilityHidden(true)
             Slider(value: Binding(get: { value }, set: onChange), in: 0...1)
+                .accessibilityLabel(label)
+                .accessibilityValue("\(Int(value * 100)) percent")
         }
     }
 
@@ -213,6 +251,7 @@ struct MenuBarQuickPanel: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(isOn ? Color.accentColor : .secondary)
                     .frame(width: 16)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.primary)
@@ -221,11 +260,16 @@ struct MenuBarQuickPanel: View {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
                 }
             }
         }
         .buttonStyle(.plain)
+        .hoverRowFill()
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
     }
 
     private func actionRow(icon: String, title: String, action: @escaping () -> Void) -> some View {
@@ -235,6 +279,7 @@ struct MenuBarQuickPanel: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.primary)
@@ -243,7 +288,10 @@ struct MenuBarQuickPanel: View {
             }
         }
         .buttonStyle(.plain)
+        .hoverRowFill()
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
     }
 
     private func quickButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
@@ -255,11 +303,42 @@ struct MenuBarQuickPanel: View {
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.06))
-            )
         }
         .buttonStyle(.plain)
+        .hoverRowFill(cornerRadius: 10, resting: 0.06, hover: 0.11)
         .help(label)
+    }
+}
+
+// MARK: - Hover fill (menu-item background fades in on hover)
+
+/// A background pill that fades in behind whatever it's applied to on
+/// hover, rather than the row staying totally inert until clicked. Shared
+/// by `toggleRow`/`actionRow` (fade from nothing) and `quickButton` (which
+/// already has a resting fill — this just brightens it slightly instead).
+private struct HoverRowFill: ViewModifier {
+    var cornerRadius: CGFloat = 6
+    var restingOpacity: Double = 0
+    var hoverOpacity: Double = 0.06
+
+    @State private var isHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(isHovering ? hoverOpacity : restingOpacity))
+            )
+            .onHover { hovering in
+                guard !reduceMotion else { isHovering = hovering; return }
+                withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
+            }
+    }
+}
+
+private extension View {
+    func hoverRowFill(cornerRadius: CGFloat = 6, resting: Double = 0, hover: Double = 0.06) -> some View {
+        modifier(HoverRowFill(cornerRadius: cornerRadius, restingOpacity: resting, hoverOpacity: hover))
     }
 }

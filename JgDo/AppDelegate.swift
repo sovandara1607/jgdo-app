@@ -2,15 +2,14 @@ import AppKit
 import SwiftUI
 import QuartzCore
 import Observation
+import os
 
 // MARK: - HUD shared state
 
 @Observable
 final class HUDState {
     static let shared = HUDState()
-    var frontApp: NSRunningApplication?
     var recentApps: [NSRunningApplication] = []
-    var currentWindows: [WindowInfo] = []
     var searchText: String = ""
     var focusSearch: Bool = false
     var selectedIndex: Int = 0
@@ -20,17 +19,28 @@ final class HUDState {
     private let service = WindowManagerService()
     private init() {}
 
-    func updateForApp(_ app: NSRunningApplication) {
-        frontApp = app
-        currentWindows = service.fetchWindows().filter { $0.pid == app.processIdentifier }
+    /// Whichever app arrow-key navigation or search currently has
+    /// highlighted — nil once filtering/typing leaves nothing selected.
+    var selectedApp: NSRunningApplication? {
+        let apps = filteredApps
+        guard apps.indices.contains(selectedIndex) else { return nil }
+        return apps[selectedIndex]
+    }
+
+    /// Live windows for `selectedApp`, for the switcher's preview panel.
+    /// Computed (not cached) so it's always in sync with `selectedIndex`/
+    /// `searchText` — previously this was a stored property a now-deleted
+    /// `updateForApp(_:)` was supposed to refresh on every selection change,
+    /// but nothing ever called it, so the preview silently never updated.
+    var currentWindows: [WindowInfo] {
+        guard let app = selectedApp else { return [] }
+        return service.fetchWindows().filter { $0.pid == app.processIdentifier }
     }
 
     func cleanRecentApps() {
         recentApps = recentApps.filter { !$0.isTerminated }
     }
 
-    /// Recent live apps filtered by the search text (shared by the view and the
-    /// keyboard handler so navigation and display stay in sync).
     var filteredApps: [NSRunningApplication] {
         let live = recentApps.filter { !$0.isTerminated }
         let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
@@ -42,32 +52,27 @@ final class HUDState {
 // MARK: - App delegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    /// Weak ref so Settings (a plain SwiftUI view, no delegate access of its
-    /// own) can poke menu-bar-affecting changes without plumbing a closure
-    /// down through every intermediate view.
     private(set) static weak var shared: AppDelegate?
 
     private var statusItem: NSStatusItem?
     private var statusPopover: MenuBarPopoverPanel?
-    /// The plain SF Symbol icon, restored when the menu bar's live-stat
-    /// gauge (see `updateMenuBarStat`) is switched off.
     private var defaultStatusIcon: NSImage?
     private var hudPanel: NSPanel?
     private var clipboardPanel: NSPanel?
     private var commandPalettePanel: NSPanel?
-    private var cheatSheetPanel: NSPanel?
-    private var scratchpadPanel: NSPanel?
-    private var organizePanel: NSPanel?
-    private var hotkeyManager: HotkeyManager?
-    private var dragController: WindowDragController?
+    private let cheatSheetController = CheatSheetPanelController()
+    private let scratchpadController = ScratchpadPanelController()
+    private let organizeController = OrganizePanelController()
+    private let windowParkingController = WindowParkingController()
+    private let nlWorkspaceController = NLWorkspacePanelController()
+    private let layoutPickerController = LayoutPickerPanelController()
+    private let layoutSelectorController = WindowLayoutSelectorController()
+    private let workspaceTemplatesController = WorkspaceTemplatesPanelController()
     private var workspaceObserver: Any?
     private var deactivateObserver: Any?
     private var switcherKeyMonitor: Any?
     private var clipboardKeyMonitor: Any?
     private var commandPaletteKeyMonitor: Any?
-    private var cheatSheetKeyMonitor: Any?
-    private var scratchpadKeyMonitor: Any?
-    private var organizeKeyMonitor: Any?
     private var didRequestScreenRecordingAccess = false
     /// The app that was frontmost when the clipboard panel opened — focus
     /// returns to it so the picked item can be pasted in place.
@@ -81,10 +86,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupStatusPopover()
 
-        if LicenseManager.shared.isPro {
-            startLicensedFeatures()
+        let proceedPastOnboarding: () -> Void = { [weak self] in
+            if LicenseManager.shared.isPro {
+                self?.startLicensedFeatures()
+            } else {
+                ActivationWindow.show { [weak self] in self?.startLicensedFeatures() }
+            }
+        }
+        if AppSettings.hasCompletedOnboarding {
+            proceedPastOnboarding()
         } else {
-            ActivationWindow.show { [weak self] in self?.startLicensedFeatures() }
+            OnboardingWindow.show(onFinished: proceedPastOnboarding)
         }
     }
 
@@ -96,17 +108,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupHUDPanel()
         setupClipboardPanel()
         setupCommandPalettePanel()
-        setupCheatSheetPanel()
-        setupScratchpadPanel()
-        setupOrganizePanel()
+        cheatSheetController.setup()
+        scratchpadController.setup()
+        organizeController.setup()
+        nlWorkspaceController.setup()
+        layoutPickerController.setup()
+        workspaceTemplatesController.setup()
         setupWorkspaceObserver()
-        setupHotkeys()
-        setupDragController()
-        ClipboardService.shared.start()
-        if AppSettings.lowBatteryAlertsEnabled {
-            BatteryAlertService.shared.start()
+        LicenseFeatureCoordinator.shared.start { [weak self] mgr in
+            self?.configureHotkeys(mgr)
         }
         WorkflowInsightsService.shared.pruneOldEvents()
+        WorkspaceService.shared.restoreWorkspacesFlaggedForLaunch()
         // Seed recent apps so dual-resize works from the very first hotkey press.
         // runningApplications is in arbitrary order — put the actual frontmost
         // app first so the first dual-snap picks the right partner.
@@ -122,7 +135,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func checkAccessibilityPermission() {
-        guard !AXIsProcessTrusted() else { return }
+        PermissionMonitor.shared.refresh()
+        guard !PermissionMonitor.shared.accessibilityTrusted else { return }
         // AXIsProcessTrusted() alone never registers the app with the OS —
         // without the prompt option, JgDo would never appear in System
         // Settings → Privacy & Security → Accessibility for the user to
@@ -145,7 +159,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let obs = deactivateObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
         }
-        dragController?.stop()
+        // Symmetric with `startLicensedFeatures()` — used to only stop
+        // `dragController` here, leaving hotkeys/clipboard-polling/battery
+        // monitoring/cleaning-mode running until process teardown killed
+        // them implicitly rather than explicitly.
+        LicenseFeatureCoordinator.shared.stop()
+        // Explicitly tears down any live SCStreams rather than letting
+        // process teardown do it implicitly — ScreenCaptureKit streams are
+        // OS-level capture sessions, worth stopping cleanly.
+        FloatingWindowManager.shared.stopAll()
     }
 
     // MARK: - Status bar (icon only; left-click = system status popover)
@@ -153,7 +175,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem?.button else { return }
-        defaultStatusIcon = loadStatusIcon()
+        defaultStatusIcon = MenuBarIconRendering.loadStatusIcon()
         button.image = defaultStatusIcon
         button.imagePosition = .imageLeading
         // Left-click opens the full popover; right-click shows the quick
@@ -175,11 +197,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// which would swallow left-clicks into a menu too) — the current event
     /// on `NSApp` is how AppKit distinguishes which mouse button fired.
     @objc private func statusItemClicked() {
+        let opening = statusPopover?.isShown != true && quickPopover?.isShown != true
+        if opening { animateStatusIconPress() }
         if NSApp.currentEvent?.type == .rightMouseUp {
             showQuickPanel()
         } else {
             toggleStatusPopover()
         }
+    }
+
+    /// A small "press" reaction on the menu bar icon itself right as a panel
+    /// opens — down slightly, spring back with a touch of overshoot, settle.
+    /// Purely cosmetic (doesn't gate or delay the panel opening, which
+    /// starts in the same call), so it costs nothing if Reduce Motion is on,
+    /// in which case it's skipped entirely rather than just shortened —
+    /// this is exactly the kind of icon bounce that setting exists to turn
+    /// off.
+    private func animateStatusIconPress() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              let button = statusItem?.button else { return }
+        button.wantsLayer = true
+        guard let layer = button.layer else { return }
+
+        let keyframes = CAKeyframeAnimation(keyPath: "transform.scale")
+        keyframes.values = [1.0, 0.88, 1.05, 1.0]
+        // Roughly matches how far through the ~190ms total each step lands
+        // — quick compress, springier release, short settle.
+        keyframes.keyTimes = [0, 0.32, 0.7, 1.0]
+        keyframes.duration = 0.19
+        keyframes.timingFunctions = [
+            CAMediaTimingFunction(name: .easeIn),
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+        ]
+        layer.add(keyframes, forKey: "statusIconPress")
     }
 
     // MARK: - Quick panel (right-click)
@@ -234,8 +285,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func toggleAlwaysOnTopOnFrontmost() {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let (frame, pinned) = AlwaysOnTopService.shared.toggleFocusedWindow(of: app) else { return }
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let appKitFrame = CGRect(x: frame.minX, y: mainH - frame.maxY, width: frame.width, height: frame.height)
+        let appKitFrame = CoordinateSpace.appKit(fromCG: frame)
         let screen = NSScreen.main ?? NSScreen.screens[0]
         SnapPreviewOverlay.shared.show(primary: appKitFrame, secondary: nil,
                                         indicator: pinned ? "Pinned" : "Unpinned", on: screen)
@@ -249,8 +299,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var ref: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &ref) == .success,
               let ref, let cgFrame = WindowManagerService.axFrame(of: ref as! AXUIElement) else { return }
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let appKitFrame = CGRect(x: cgFrame.minX, y: mainH - cgFrame.maxY, width: cgFrame.width, height: cgFrame.height)
+        let appKitFrame = CoordinateSpace.appKit(fromCG: cgFrame)
         let screen = NSScreen.main ?? NSScreen.screens[0]
         SnapPreviewOverlay.shared.show(primary: appKitFrame, secondary: nil,
                                         indicator: enabled ? "Remembering" : "Forgotten", on: screen)
@@ -298,75 +347,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = ""
         case .cpu:
             let pct = status.cpuPercent / 100
-            button.image = renderGaugeIcon(percent: pct)
+            button.image = MenuBarIconRendering.renderGaugeIcon(percent: pct)
             button.title = " " + String(format: "%.0f%%", status.cpuPercent)
         case .memory:
-            button.image = renderGaugeIcon(percent: status.memPercent)
+            button.image = MenuBarIconRendering.renderGaugeIcon(percent: status.memPercent)
             button.title = " " + String(format: "%.0f%%", status.memPercent * 100)
         }
         positionBadge()
     }
 
-    /// Draws a small live ring (track + accent-colored progress arc) in
-    /// place of the static SF Symbol — a mini radial gauge, à la iStat
-    /// Menus, for whichever reading the Settings picker selected. Not a
-    /// template image (it carries real color), so it's rebuilt on every
-    /// update rather than tinted automatically like the plain icon is.
-    private func renderGaugeIcon(percent: Double) -> NSImage {
-        let size = NSSize(width: 16, height: 16)
-        let image = NSImage(size: size, flipped: false) { rect in
-            let lineWidth: CGFloat = 2.2
-            let ringRect = rect.insetBy(dx: lineWidth / 2 + 0.5, dy: lineWidth / 2 + 0.5)
-
-            let track = NSBezierPath(ovalIn: ringRect)
-            track.lineWidth = lineWidth
-            NSColor.labelColor.withAlphaComponent(0.18).setStroke()
-            track.stroke()
-
-            let clamped = min(max(percent, 0), 1)
-            guard clamped > 0 else { return true }
-            let arc = NSBezierPath()
-            arc.appendArc(withCenter: NSPoint(x: ringRect.midX, y: ringRect.midY),
-                          radius: ringRect.width / 2,
-                          startAngle: 90, endAngle: 90 - clamped * 360, clockwise: true)
-            arc.lineWidth = lineWidth
-            arc.lineCapStyle = .round
-            NSColor.controlAccentColor.setStroke()
-            arc.stroke()
-            return true
-        }
-        image.isTemplate = false
-        return image
-    }
-
     // MARK: - Status bar icon (bundled logo or user-chosen replacement)
-
-    /// Loads the current menu bar icon: a user-chosen image if one is set in
-    /// Settings, otherwise the bundled JgDo logo. Scaled to menu bar size
-    /// (18pt, @2x/@3x-ready) so custom images of any resolution look crisp
-    /// without distorting the status item's layout.
-    private func loadStatusIcon() -> NSImage? {
-        let raw: NSImage?
-        if let url = AppSettings.customStatusIconURL {
-            raw = NSImage(contentsOf: url)
-        } else {
-            raw = NSImage(named: "StatusBarIcon")
-        }
-        guard let raw else { return nil }
-        let size = NSSize(width: 18, height: 18)
-        let scaled = NSImage(size: size, flipped: false) { rect in
-            raw.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
-                     respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
-            return true
-        }
-        scaled.accessibilityDescription = "JgDo"
-        scaled.isTemplate = AppSettings.customStatusIconTemplate
-        return scaled
-    }
 
     /// Called by Settings after the user picks/resets the menu bar icon.
     func applyStatusIconSetting() {
-        defaultStatusIcon = loadStatusIcon()
+        defaultStatusIcon = MenuBarIconRendering.loadStatusIcon()
         if currentMenuBarStat == .off {
             statusItem?.button?.image = defaultStatusIcon
         }
@@ -634,9 +628,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             !$0.isTerminated && $0.processIdentifier != app.processIdentifier
         }
 
-        // Chosen app → left half, the app you were on → right half.
+        // Chosen app → left half, the app you were on → right half —
+        // grouped so ⌃⌥Z undoes both together.
+        WindowSnapUndo.shared.beginTransaction()
         svc.resize(app: app, to: .leftHalf)
         if let partner { svc.resize(app: partner, to: .rightHalf) }
+        WindowSnapUndo.shared.endTransaction()
         app.activate(options: [.activateIgnoringOtherApps])
 
         // Ghost preview of the resulting layout on the active screen.
@@ -829,7 +826,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let rootView = CommandPaletteView(
             onDismiss: { [weak self] in self?.hideCommandPalette() },
-            onPick: { [weak self] window in self?.pickPaletteWindow(window) }
+            onPick: { [weak self] window in self?.pickPaletteWindow(window) },
+            onPickCommand: { [weak self] command in self?.pickPaletteCommand(command) },
+            onPickFile: { [weak self] file in self?.pickPaletteFile(file) }
         )
         .environment(CommandPaletteState.shared)
         panel.contentViewController = NSHostingController(rootView: rootView)
@@ -876,6 +875,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             panel?.orderOut(nil)
         })
         WindowThumbnailService.clearCache()
+        FileSearchService.shared.stop()
+        QuickLookCoordinator.shared.closePreview()
     }
 
     @objc func toggleCommandPalette() {
@@ -893,6 +894,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .quit:     service.quitApp(pid: window.pid)
             case .hide:     service.hideApp(window)
             case .minimize: service.minimizeWindow(window)
+            case .float:    floatWindow(forAppPID: window.pid)
             }
             hideCommandPalette()
             return
@@ -915,6 +917,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hideCommandPalette()
     }
 
+    /// A layout command row (see `CommandPaletteState.commandResults`) was
+    /// picked — applies it to the target app's focused window via the same
+    /// `WindowResizeService` a hotkey press already uses, then flashes the
+    /// same ghost-tile confirmation `onResize` shows for hotkeys, so typing
+    /// "safari left" and pressing ⌥← feel like the same action rather than
+    /// two different features that happen to do similar things.
+    private func pickPaletteCommand(_ command: CommandPaletteState.PaletteCommand) {
+        guard let app = NSRunningApplication(processIdentifier: command.targetPID),
+              let result = WindowResizeService.shared.resize(app: app, to: command.layout) else {
+            hideCommandPalette()
+            return
+        }
+        if let bundleID = app.bundleIdentifier {
+            RecentCommandsStore.record(bundleID: bundleID, layout: command.layout)
+        }
+        if AppSettings.placementPreviewEnabled {
+            SnapPreviewOverlay.shared.show(primary: result.frame, secondary: nil, on: result.screen)
+        }
+        WindowActionHUD.shared.show(appIcon: app.icon, appName: app.localizedName ?? command.targetAppName,
+                                     layout: command.layout, on: result.screen)
+        hideCommandPalette()
+    }
+
+    /// A File Search row (see `CommandPaletteState.fileResults`) was picked
+    /// — open it with its default app, same as double-clicking it in
+    /// Finder. Reveal/Copy Path/Copy URL live in the row's own context menu
+    /// (`CommandPaletteView.fileRow`), not here.
+    private func pickPaletteFile(_ file: FileSearchResult) {
+        NSWorkspace.shared.open(file.url)
+        hideCommandPalette()
+    }
+
+    // MARK: - Picture-in-Picture (⌃⌥⇧F, or `>float` in the Command Palette)
+
+    @objc func floatFrontmostWindow() {
+        guard let front = NSWorkspace.shared.frontmostApplication else { return }
+        floatWindow(forAppPID: front.processIdentifier)
+    }
+
+    /// Resolves `pid`'s frontmost on-screen window and starts mirroring it —
+    /// shared by the hotkey (frontmost app) and the `>float` quick action
+    /// (a specific app picked by name/MRU).
+    private func floatWindow(forAppPID pid: pid_t) {
+        guard let target = WindowManagerService().fetchWindows().first(where: { $0.pid == pid }) else {
+            AppLog.general.notice("Float: no window found for pid \(pid).")
+            return
+        }
+        FloatingWindowManager.shared.float(window: target)
+    }
+
     private func installCommandPaletteKeyMonitor() {
         removeCommandPaletteKeyMonitor()
         commandPaletteKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -924,8 +976,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case 126: state.move(-1); return nil   // ↑
             case 125: state.move(1);  return nil   // ↓
             case 36, 76:                                 // Return / Enter
-                if let window = state.selectedWindow { self.pickPaletteWindow(window) }
+                if let file = state.selectedFile { self.pickPaletteFile(file) }
+                else if let command = state.selectedCommand { self.pickPaletteCommand(command) }
+                else if let window = state.selectedWindow { self.pickPaletteWindow(window) }
                 else { self.hideCommandPalette() }
+                return nil
+            case 49:                                     // Space — Quick Look (Finder convention)
+                if let file = state.selectedFile {
+                    QuickLookCoordinator.shared.preview(file.url)
+                    return nil
+                }
+                return event                               // no file selected → space types normally
+            case 48:                                     // Tab / ⇧Tab — jump between app groups
+                state.jumpGroup(event.modifierFlags.contains(.shift) ? -1 : 1)
+                return nil
+            case 13 where event.modifierFlags.contains(.command):   // ⌘W — close selected window
+                if let window = state.selectedWindow, window.pid >= 0 {
+                    WindowManagerService().closeWindow(window)
+                    state.reload()
+                }
+                return nil
+            case 46 where event.modifierFlags.contains(.command):   // ⌘M — minimize selected window
+                if let window = state.selectedWindow, window.pid >= 0 {
+                    WindowManagerService().minimizeWindow(window)
+                    state.reload()
+                }
                 return nil
             case 53: self.hideCommandPalette(); return nil   // Esc
             default: return event                             // typing → search field
@@ -943,13 +1018,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func checkScreenRecordingPermission() {
         guard !didRequestScreenRecordingAccess else { return }
         didRequestScreenRecordingAccess = true
-        guard !WindowThumbnailService.isAuthorized else { return }
+        PermissionMonitor.shared.refresh()
+        guard !PermissionMonitor.shared.screenRecordingAuthorized else { return }
         WindowThumbnailService.requestAccessIfNeeded()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            guard !WindowThumbnailService.isAuthorized else { return }
+            PermissionMonitor.shared.refresh()
+            guard !PermissionMonitor.shared.screenRecordingAuthorized else { return }
             FloatingNoticeCenter.shared.showPermissionRequest(
                 title: "Screen Recording Permission Needed",
-                message: "Live window thumbnails in the Command Palette need Screen Recording access.\n\nGo to System Settings → Privacy & Security → Screen Recording, then enable JgDo. The palette still works without it — cards just show app icons instead of previews.",
+                message: "Live window thumbnails in the Command Palette need Screen Recording access.\n\nGo to System Settings → Privacy & Security → Screen Recording, then enable JgDo and restart it — this permission needs a restart to take effect. The palette still works without it — cards just show app icons instead of previews.",
                 settingsURLString: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
             )
         }
@@ -974,6 +1051,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if state.recentApps.count > 6 { state.recentApps.removeLast() }
             // Feed the workflow-insights engine (on-device only).
             WorkflowInsightsService.shared.recordActivation(of: app)
+            // Smart Layouts: re-derives its rolling-window signature from
+            // the AppUsageEvent row WorkflowInsightsService just inserted
+            // above — must run after it, not a second observer.
+            SmartLayoutEngine.shared.recordActivation()
             // Per-app window memory: apply once per process lifetime.
             WindowMemoryService.shared.applyIfNeeded(app)
         }
@@ -990,217 +1071,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Shortcuts cheat sheet (⌃⌥/)
+    // MARK: - Shortcuts cheat sheet (⌃⌥/), Scratchpad (⌃⌥N), Window Parking (⌃⌥P), Organize (⌃⌥O)
+    //
+    // Each of these is self-contained (no cross-panel coordination needed,
+    // unlike the HUD/clipboard/command-palette cluster above) — extracted
+    // into its own controller (`CheatSheetPanelController`,
+    // `ScratchpadPanelController`, `OrganizePanelController`,
+    // `WindowParkingController`). These forwarders preserve the exact
+    // method names hotkeys and `ContentView` (via `AppDelegate.shared?.…`)
+    // already call.
 
-    private func setupCheatSheetPanel() {
-        let panel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 420),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.isMovableByWindowBackground = true
-        panel.level = .floating
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        // Native window shadow OFF — SwiftUI's own `.panelCard()` shadow is
-        // the only one now. Having both caused a jagged double-shadow seam
-        // at the rounded corners during the alpha fade-in (the native shadow
-        // rasterizes against stale corner geometry mid-animation).
-        panel.hasShadow = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentViewController = NSHostingController(rootView: ShortcutCheatSheetView())
-        cheatSheetPanel = panel
-    }
-
-    @objc func toggleCheatSheet() {
-        guard let panel = cheatSheetPanel else { return }
-        if panel.isVisible { hideCheatSheet(); return }
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        let pw: CGFloat = 340, ph: CGFloat = 420
-        let x = screen.frame.minX + (screen.frame.width - pw) / 2
-        let y = screen.frame.minY + (screen.frame.height - ph) / 2
-        panel.setFrame(NSRect(x: x, y: y, width: pw, height: ph), display: true)
-        // Without this, the shadow mask AppKit cached at creation stays
-        // stale after the resize — shows up as a jagged dark outline
-        // ghosting the panel's original placeholder frame.
-        panel.invalidateShadow()
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        cheatSheetKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.cheatSheetPanel?.isVisible == true else { return event }
-            if event.keyCode == 53 { self.hideCheatSheet(); return nil }   // Esc
-            return event
-        }
-    }
-
-    private func hideCheatSheet() {
-        if let m = cheatSheetKeyMonitor { NSEvent.removeMonitor(m); cheatSheetKeyMonitor = nil }
-        cheatSheetPanel?.orderOut(nil)
-    }
-
-    // MARK: - Scratchpad (⌃⌥N)
-
-    private func setupScratchpadPanel() {
-        let panel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 260),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.isMovableByWindowBackground = true
-        panel.level = .floating
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        // Native window shadow OFF — SwiftUI's own `.panelCard()` shadow is
-        // the only one now. Having both caused a jagged double-shadow seam
-        // at the rounded corners during the alpha fade-in (the native shadow
-        // rasterizes against stale corner geometry mid-animation).
-        panel.hasShadow = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let rootView = ScratchpadView(onDismiss: { [weak self] in self?.hideScratchpad() })
-        panel.contentViewController = NSHostingController(rootView: rootView)
-        scratchpadPanel = panel
-    }
-
-    @objc func toggleScratchpad() {
-        guard let panel = scratchpadPanel else { return }
-        if panel.isVisible { hideScratchpad(); return }
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        let pw: CGFloat = 320, ph: CGFloat = 260
-        let x = screen.frame.minX + (screen.frame.width - pw) / 2
-        let y = screen.frame.minY + (screen.frame.height - ph) / 2 + screen.frame.height * 0.1
-        panel.setFrame(NSRect(x: x, y: y, width: pw, height: ph), display: true)
-        panel.invalidateShadow()
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        scratchpadKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.scratchpadPanel?.isVisible == true else { return event }
-            if event.keyCode == 53 { self.hideScratchpad(); return nil }   // Esc
-            return event
-        }
-    }
-
-    private func hideScratchpad() {
-        if let m = scratchpadKeyMonitor { NSEvent.removeMonitor(m); scratchpadKeyMonitor = nil }
-        scratchpadPanel?.orderOut(nil)
-    }
-
-    // MARK: - Window Parking (⌃⌥P / ⌃⌥⇧P)
-
-    /// Parks the frontmost app's focused window, flashing a confirmation
-    /// on top of the ghost-preview reticle used elsewhere.
-    func parkFrontmostWindow() {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return }
-        // Read the frame BEFORE parking (park minimizes it) for the flash.
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        var ref: CFTypeRef?
-        var appKitFrame: CGRect?
-        if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &ref) == .success,
-           let ref, let cgFrame = WindowManagerService.axFrame(of: ref as! AXUIElement) {
-            let mainH = NSScreen.screens.first?.frame.height ?? 0
-            appKitFrame = CGRect(x: cgFrame.minX, y: mainH - cgFrame.maxY, width: cgFrame.width, height: cgFrame.height)
-        }
-        guard WindowParkingService.shared.park(app) != nil else { return }
-        if let appKitFrame {
-            let screen = NSScreen.main ?? NSScreen.screens[0]
-            SnapPreviewOverlay.shared.show(primary: appKitFrame, secondary: nil, indicator: "Parked", on: screen)
-        }
-    }
-
-    // MARK: - Organize Workspace (⌃⌥O)
-
-    private func setupOrganizePanel() {
-        let panel = KeyablePanel(
-            // Matches `OrganizeWorkspaceView`'s own `.frame(width: 560, ...)`
-            // — see the comment there for why 420 was too narrow.
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.isMovableByWindowBackground = true
-        panel.level = .floating
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        // Native window shadow OFF — SwiftUI's own `.panelCard()` shadow is
-        // the only one now. Having both caused a jagged double-shadow seam
-        // at the rounded corners during the alpha fade-in (the native shadow
-        // rasterizes against stale corner geometry mid-animation).
-        panel.hasShadow = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        organizePanel = panel
-    }
-
-    /// Snapshots the current windows fresh each time (unlike the other
-    /// panels, this one's content depends on live workspace state, not an
-    /// `@Observable` service) and rebuilds the view with that snapshot.
-    func toggleOrganizeWorkspace() {
-        guard let panel = organizePanel else { return }
-        if panel.isVisible { hideOrganizePanel(); return }
-
-        let windows = WindowManagerService().fetchWindows()
-        guard !windows.isEmpty, let screen = NSScreen.main else { return }
-
-        let rootView = OrganizeWorkspaceView(
-            windows: windows, screen: screen,
-            onApply: { [weak self] mode in
-                self?.applyOrganize(mode: mode, windows: windows, screen: screen)
-            },
-            onCancel: { [weak self] in self?.hideOrganizePanel() }
-        )
-        panel.contentViewController = NSHostingController(rootView: rootView)
-
-        let pw: CGFloat = 420, ph: CGFloat = 300
-        let x = screen.frame.minX + (screen.frame.width - pw) / 2
-        let y = screen.frame.minY + (screen.frame.height - ph) / 2
-        panel.setFrame(NSRect(x: x, y: y, width: pw, height: ph), display: true)
-        panel.invalidateShadow()
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        organizeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.organizePanel?.isVisible == true else { return event }
-            if event.keyCode == 53 { self.hideOrganizePanel(); return nil }   // Esc
-            return event
-        }
-    }
-
-    private func applyOrganize(mode: OrganizeMode, windows: [WindowInfo], screen: NSScreen) {
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        // "before" snapshot for undo, taken from the same fetch the preview
-        // was built from.
-        OrganizeUndoService.shared.record(windows.map { ($0, $0.appKitFrame(mainHeight: mainH)) })
-        let proposed = OrganizeWorkspaceService.propose(mode: mode, windows: windows, on: screen)
-        let svc = WindowManagerService()
-        for (window, frame) in proposed {
-            svc.applyFrame(frame, to: window, on: screen)
-        }
-        hideOrganizePanel()
-    }
-
-    private func hideOrganizePanel() {
-        if let m = organizeKeyMonitor { NSEvent.removeMonitor(m); organizeKeyMonitor = nil }
-        organizePanel?.orderOut(nil)
-    }
+    @objc func toggleCheatSheet() { cheatSheetController.toggle() }
+    @objc func toggleScratchpad() { scratchpadController.toggle() }
+    func toggleOrganizeWorkspace() { organizeController.toggle() }
+    func toggleNLWorkspace() { nlWorkspaceController.toggle() }
+    func toggleLayoutPicker() { layoutPickerController.toggle() }
+    func showWorkspaceTemplates() { workspaceTemplatesController.show() }
+    func parkFrontmostWindow() { windowParkingController.parkFrontmostWindow() }
 
     // MARK: - Hotkeys
 
-    private func setupHotkeys() {
+    /// Wires callback closures onto `mgr` — construction, `start()`, and
+    /// `stop()` all belong to `LicenseFeatureCoordinator` now (see
+    /// `startLicensedFeatures()`), so this only configures behavior, it
+    /// doesn't own the manager's lifecycle.
+    private func configureHotkeys(_ mgr: HotkeyManager) {
         // `ShortcutStore.lookup` (the table HotkeyManager's tap matches key
         // combos against) is only populated inside ShortcutStore's private
         // init() — which only runs the first time `.shared` is *accessed*.
@@ -1210,7 +1105,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // it here guarantees the table is ready before the tap starts.
         _ = ShortcutStore.shared
 
-        let mgr = HotkeyManager()
         mgr.onToggleSwitcher = { [weak self] in
             DispatchQueue.main.async { self?.toggleHUD() }
         }
@@ -1220,6 +1114,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // ⌘⌥Space opens the Spotlight-style command palette.
         mgr.onCommandPalette = { [weak self] in
+            DispatchQueue.main.async { self?.toggleCommandPalette() }
+        }
+        // ⌃⌥⇧W — dedicated window-switcher trigger. Same panel as ⌘⌥Space;
+        // no separate switcher UI to keep in sync.
+        mgr.onWindowSwitcher = { [weak self] in
             DispatchQueue.main.async { self?.toggleCommandPalette() }
         }
         // ⌃⌥⇧. (>) / ⌃⌥⇧, (<) step-resize the frontmost window in place.
@@ -1283,41 +1182,66 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             SnapGroupService.shared.createGroup(named: name)
         }
         // ⌃⌥O opens the Organize Workspace preview.
+        mgr.onFloatFrontmostWindow = { [weak self] in
+            self?.floatFrontmostWindow()
+        }
+        mgr.onNLWorkspace = { [weak self] in
+            self?.toggleNLWorkspace()
+        }
+        mgr.onShowLayoutPicker = { [weak self] in
+            self?.layoutPickerController.toggle()
+        }
         mgr.onOrganizeWorkspace = { [weak self] in
             self?.toggleOrganizeWorkspace()
         }
-        mgr.onResize = { layout in
-            let svc = WindowResizeService.shared
-            let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            // Snap the front window, then the topmost OTHER visible window to the complement.
-            // `resizeFrontmostWindow` returns what it actually applied, which
-            // may be mid-cycle for edge-snap layouts — not necessarily the
-            // plain preset `frame(for:on:)` would report.
-            let screen = NSScreen.main ?? NSScreen.screens[0]
-            let primary = svc.resizeFrontmostWindow(to: layout) ?? svc.frame(for: layout, on: screen)
-            // Keep the partner complementary to whatever the primary's
-            // edge-snap cycle just landed on (e.g. two-thirds → the partner
-            // gets the remaining third), not always a fixed half.
-            var secondary: CGRect?
-            if let complement = layout.complement {
-                secondary = svc.resizeOtherVisibleWindow(excluding: frontPID, to: complement,
-                                                          fraction: svc.complementFraction(for: layout))
-            }
-            // Flash a ghost preview of where the windows land, with a "2/3"
-            // step indicator if the edge-snap cycle is mid-sequence.
+        // ⌃⌥←/→'s "hold and cycle" layout overlay owns those two shortcuts
+        // now (see `WindowLayoutSelectorController`); `onResize` still
+        // handles every OTHER layout hotkey (↑/↓, quarters, maximize,
+        // center) exactly as before. When the overlay is turned off in
+        // Settings, ⌃⌥←/→ fall back to this same dual-snap behavior too —
+        // `legacyApply` below is that one shared implementation, not a copy.
+        mgr.onResize = { [weak self] layout in self?.applyLayoutImmediately(layout) }
+        layoutSelectorController.legacyApply = { [weak self] layout in self?.applyLayoutImmediately(layout) }
+        layoutSelectorController.attach(to: mgr)
+    }
+
+    /// The original single-shot ⌃⌥-arrow behavior: snap the frontmost
+    /// window, snap the topmost other visible window to the complementary
+    /// half, flash a ghost preview + confirmation HUD. Used directly by
+    /// every layout hotkey except ⌃⌥←/→, and by ⌃⌥←/→ themselves when the
+    /// layout-cycle overlay is disabled in Settings.
+    private func applyLayoutImmediately(_ layout: WindowLayout) {
+        let svc = WindowResizeService.shared
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // `resizeFrontmostWindow` returns what it actually applied, which
+        // may be mid-cycle for edge-snap layouts — not necessarily the
+        // plain preset `frame(for:on:)` would report.
+        let screen = NSScreen.main ?? NSScreen.screens[0]
+        // Grouped into one undo transaction — ⌃⌥Z restores both the
+        // primary and the auto-filled partner together, not just whichever
+        // was recorded last.
+        WindowSnapUndo.shared.beginTransaction()
+        let primary = svc.resizeFrontmostWindow(to: layout) ?? svc.frame(for: layout, on: screen)
+        // Keep the partner complementary to whatever the primary's
+        // edge-snap cycle just landed on (e.g. two-thirds → the partner
+        // gets the remaining third), not always a fixed half.
+        var secondary: CGRect?
+        if let complement = layout.complement {
+            secondary = svc.resizeOtherVisibleWindow(excluding: frontPID, to: complement,
+                                                      fraction: svc.complementFraction(for: layout),
+                                                      preferredScreen: screen)
+        }
+        WindowSnapUndo.shared.endTransaction()
+        // Flash a ghost preview of where the windows land, with a "2/3"
+        // step indicator if the edge-snap cycle is mid-sequence.
+        if AppSettings.placementPreviewEnabled {
             SnapPreviewOverlay.shared.show(primary: primary, secondary: secondary,
                                             indicator: svc.cycleIndicator(for: layout), on: screen)
         }
-        mgr.start()
-        hotkeyManager = mgr
-    }
-
-    // MARK: - ⌘-drag snap + adjacent resize
-
-    private func setupDragController() {
-        let controller = WindowDragController()
-        controller.start()
-        dragController = controller
+        if let frontPID, let app = NSRunningApplication(processIdentifier: frontPID) {
+            WindowActionHUD.shared.show(appIcon: app.icon, appName: app.localizedName ?? "Window",
+                                         layout: layout, on: screen)
+        }
     }
 }
 

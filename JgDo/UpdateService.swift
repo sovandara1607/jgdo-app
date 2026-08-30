@@ -4,6 +4,7 @@
 
 import Foundation
 import Sparkle
+import os
 
 /// Sparkle's delegate protocol requires `NSObjectProtocol` conformance, which
 /// would force `UpdateService` itself to inherit from `NSObject`. Instead we
@@ -53,7 +54,7 @@ private final class SparkleDelegateProxy: NSObject, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
         // Optional: prepare for install (save state, etc.)
-        print("Will install update: \(item.displayVersionString)")
+        AppLog.general.info("Will install update: \(item.displayVersionString, privacy: .public)")
     }
 
     func updater(_ updater: SPUUpdater, didFinishLoading appcast: SUAppcast) {

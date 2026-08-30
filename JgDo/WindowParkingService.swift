@@ -22,8 +22,8 @@ final class WindowParkingService {
 
     func reload() {
         let ctx = Persistence.shared.context
-        parkedWindows = (try? ctx.fetch(FetchDescriptor<ParkedWindow>(
-            sortBy: [SortDescriptor(\.parkedAt, order: .reverse)]))) ?? []
+        parkedWindows = ctx.fetchLogged(FetchDescriptor<ParkedWindow>(
+            sortBy: [SortDescriptor(\.parkedAt, order: .reverse)]), using: AppLog.workspace)
     }
 
     /// Parks the focused window of `app`. Returns the window's title on
@@ -53,8 +53,7 @@ final class WindowParkingService {
         AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
         let title = (titleRef as? String).flatMap { $0.isEmpty ? nil : $0 } ?? app.localizedName ?? "Window"
 
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let appKit = CGRect(x: cgFrame.minX, y: mainH - cgFrame.maxY, width: cgFrame.width, height: cgFrame.height)
+        let appKit = CoordinateSpace.appKit(fromCG: cgFrame)
         let screenName = WindowManagerService.screenLabel(forCGBounds: cgFrame)
 
         let entry = ParkedWindow(bundleID: app.bundleIdentifier ?? app.localizedName ?? "",
@@ -101,8 +100,7 @@ final class WindowParkingService {
         } ?? axWindows.first
         guard let axWindow else { return }
 
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
-        let cgFrame = CGRect(x: frame.minX, y: mainH - frame.maxY, width: frame.width, height: frame.height)
+        let cgFrame = CoordinateSpace.cg(fromAppKit: frame)
         WindowManagerService.setAXFrame(cgFrame, of: axWindow)
         AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
         app.activate()

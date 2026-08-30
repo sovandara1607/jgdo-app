@@ -58,10 +58,9 @@ final class WindowManagerService {
     /// public API, so this only ever reports the display, not the Space.
     static func screenLabel(forCGBounds bounds: CGRect) -> String? {
         guard NSScreen.screens.count > 1 else { return nil }
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        let appKitPoint = CGPoint(x: center.x, y: mainH - center.y)
-        return NSScreen.screens.first { $0.frame.contains(appKitPoint) }?.localizedName
+        let appKitPoint = CoordinateSpace.appKit(fromCG: center)
+        return CoordinateSpace.screen(containing: appKitPoint)?.localizedName
     }
 
     struct WindowBounds {
@@ -110,6 +109,8 @@ final class WindowManagerService {
     func focusWindow(_ window: WindowInfo) {
         NSRunningApplication(processIdentifier: window.pid)?.activate()
         guard let axWin = findAXWindow(for: window) else { return }
+        // Raise alone is a no-op on a minimized window in most apps.
+        AXUIElementSetAttributeValue(axWin, kAXMinimizedAttribute as CFString, false as CFTypeRef)
         AXUIElementPerformAction(axWin, kAXRaiseAction as CFString)
     }
 
@@ -173,16 +174,7 @@ final class WindowManagerService {
     /// Moves and resizes an AX window. `frame` is in AppKit coords (bottom-left origin).
     func applyFrame(_ frame: CGRect, to window: WindowInfo, on screen: NSScreen) {
         guard let axWin = findAXWindow(for: window) else { return }
-        let mainH = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        let screenFrame = screen.frame
-        var origin = CGPoint(x: frame.minX, y: screenFrame.maxY - frame.maxY)
-        var size   = CGSize(width: frame.width, height: frame.height)
-        if let pv = AXValueCreate(.cgPoint, &origin) {
-            AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, pv)
-        }
-        if let sv = AXValueCreate(.cgSize, &size) {
-            AXUIElementSetAttributeValue(axWin, kAXSizeAttribute as CFString, sv)
-        }
+        Self.setAXFrame(CoordinateSpace.cg(fromAppKit: frame), of: axWin)
         AXUIElementPerformAction(axWin, kAXRaiseAction as CFString)
         NSRunningApplication(processIdentifier: window.pid)?.activate()
     }

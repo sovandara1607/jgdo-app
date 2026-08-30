@@ -2,21 +2,10 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 
-/// Private but long-stable AX symbol (used by every third-party macOS window
-/// manager — Rectangle, yabai, Amethyst, …) that maps an AXUIElement window
-/// to its CGWindowID. No public AX API exposes this. Safe to link directly
-/// (not dlopen'd) since it lives in ApplicationServices, already linked for
-/// every other AX call in this app.
 @_silgen_name("_AXUIElementGetWindow")
 @discardableResult
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ identifier: inout CGWindowID) -> AXError
 
-/// "Always on Top" pinning for arbitrary windows. There's no public API to
-/// raise one *specific other app's* window above all others persistently —
-/// `CGSSetWindowLevel` (SkyLight, private) is the only way, so this is
-/// loaded via dlopen the same way `MonitorControlService` loads
-/// DisplayServices: the feature simply hides/no-ops if unavailable rather
-/// than crashing on an OS where the symbol has moved or been removed.
 @Observable
 final class AlwaysOnTopService {
     static let shared = AlwaysOnTopService()
@@ -26,9 +15,6 @@ final class AlwaysOnTopService {
     private let mainConnectionFn: MainConnectionFn?
     private let setLevelFn: SetLevelFn?
 
-    /// Windows currently pinned floating, by CGWindowID. Intentionally not
-    /// persisted — a pin is a live property of the running window, not
-    /// durable user data; it naturally clears when the window closes.
     private(set) var pinnedWindowIDs: Set<CGWindowID> = []
 
     var isAvailable: Bool { mainConnectionFn != nil && setLevelFn != nil }
@@ -50,10 +36,6 @@ final class AlwaysOnTopService {
 
     func isPinned(_ windowID: CGWindowID) -> Bool { pinnedWindowIDs.contains(windowID) }
 
-    /// Toggles "always on top" for the focused window of `app`. Returns the
-    /// window's current frame (CG coords) and new pinned state, for callers
-    /// that want to flash a confirmation — nil if no window was found or the
-    /// private API isn't available on this OS.
     @discardableResult
     func toggleFocusedWindow(of app: NSRunningApplication) -> (frame: CGRect, pinned: Bool)? {
         guard isAvailable else { return nil }

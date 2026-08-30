@@ -25,8 +25,8 @@ final class SnapGroupService {
 
     func reload() {
         let ctx = Persistence.shared.context
-        groups = (try? ctx.fetch(FetchDescriptor<SnapGroup>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))) ?? []
+        groups = ctx.fetchLogged(FetchDescriptor<SnapGroup>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]), using: AppLog.workspace)
     }
 
     // MARK: Create / rename / delete
@@ -38,9 +38,8 @@ final class SnapGroupService {
     func createGroup(named name: String) -> SnapGroup? {
         let windows = windowService.fetchWindows()
         guard !windows.isEmpty else { return nil }
-        let mainH = NSScreen.screens.first?.frame.height ?? 0
         let appKitFrames: [(WindowInfo, CGRect)] = windows.map { w in
-            (w, CGRect(x: w.bounds.minX, y: mainH - w.bounds.maxY, width: w.bounds.width, height: w.bounds.height))
+            (w, CoordinateSpace.appKit(fromCG: w.bounds))
         }
         let bbox = appKitFrames.dropFirst().reduce(appKitFrames[0].1) { $0.union($1.1) }
         guard bbox.width > 0, bbox.height > 0 else { return nil }

@@ -1,6 +1,8 @@
 import Foundation
 import CoreGraphics
 import SwiftData
+import CryptoKit
+import os
 
 // MARK: - SwiftData models
 
@@ -24,6 +26,13 @@ final class ClipboardItem {
     /// Bundle ID of the app that was frontmost when the copy happened.
     var sourceBundleID: String?
     var sourceAppName: String?
+    /// SHA-256 of the item's actual content (text bytes / image bytes /
+    /// joined file paths), for cross-item deduplication — `ClipboardService`
+    /// used to only compare a new capture against the single most-recent
+    /// item, so two identical copies with something else in between would
+    /// both get stored. `nil` only for rows captured before this field
+    /// existed, until `ClipboardService`'s one-time backfill catches up.
+    var contentHash: String?
 
     var kind: Kind { Kind(rawValue: kindRaw) ?? .text }
 
@@ -53,6 +62,39 @@ final class ClipboardItem {
     }
 }
 
+extension ClipboardItem {
+    /// Pure content-hash computation, deliberately `nonisolated` (and
+    /// operating only on plain value types, not the `@Model` instance
+    /// itself) so it's safe to call from a background task — used both at
+    /// capture time and by `ClipboardService`'s one-time backfill for rows
+    /// that predate `contentHash`, which hashes potentially many images'
+    /// worth of bytes and shouldn't do that on the main actor.
+    nonisolated static func computeContentHash(kind: Kind, text: String?, imageData: Data?, filePaths: [String]) -> String {
+        var hasher = SHA256()
+        // Mix in the kind so a text item and a single-path file item that
+        // happen to contain the identical string (e.g. "/tmp/a") don't hash
+        // identically and get treated as duplicates of each other.
+        hasher.update(data: Data(kind.rawValue.utf8))
+        hasher.update(data: Data([0])) // fixed separator between the kind tag and the content below
+        switch kind {
+        case .text:
+            if let text { hasher.update(data: Data(text.utf8)) }
+        case .image:
+            if let imageData { hasher.update(data: imageData) }
+        case .file:
+            hasher.update(data: Data(filePaths.joined(separator: "\n").utf8))
+        }
+        return hasher.finalize().compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Recomputes and stores this item's dedup hash from its current
+    /// content. Mutates the `@Model` instance, so — unlike
+    /// `computeContentHash` — this must run on the main actor.
+    func recomputeContentHash() {
+        contentHash = Self.computeContentHash(kind: kind, text: text, imageData: imageData, filePaths: filePaths)
+    }
+}
+
 /// A saved arrangement of application windows that can be restored later.
 @Model
 final class Workspace {
@@ -60,6 +102,12 @@ final class Workspace {
     var symbolName: String = "square.grid.2x2"
     var createdAt: Date = Date()
     var lastUsedAt: Date?
+    /// If true, this workspace is restored automatically at app launch
+    /// (see `WorkspaceService`). Off by default — restoring windows
+    /// unprompted at every launch is surprising unless the user opts in.
+    var restoreOnLaunch: Bool = false
+    /// Starred — sorts to the top of the Workspaces list.
+    var isFavorite: Bool = false
     @Relationship(deleteRule: .cascade, inverse: \WorkspaceWindow.workspace)
     var windows: [WorkspaceWindow] = []
 
@@ -83,14 +131,23 @@ final class WorkspaceWindow {
     var y: Double = 0
     var width: Double = 0
     var height: Double = 0
+    /// The display's stable `CGDisplayCreateUUIDFromDisplayID` at capture
+    /// time — survives display arrangement changes better than raw
+    /// coordinates alone, so restore can detect "this exact monitor is
+    /// gone" instead of just "nothing currently overlaps this position"
+    /// (which can coincidentally match the wrong screen). `nil` for rows
+    /// saved before this field existed; restore falls back to geometric
+    /// containment for those, same as before.
+    var displayUUID: String?
     var workspace: Workspace?
 
     var frame: CGRect { CGRect(x: x, y: y, width: width, height: height) }
 
-    init(bundleID: String, appName: String, title: String?, frame: CGRect) {
+    init(bundleID: String, appName: String, title: String?, frame: CGRect, displayUUID: String? = nil) {
         self.bundleID = bundleID
         self.appName = appName
         self.title = title
+        self.displayUUID = displayUUID
         self.x = frame.minX
         self.y = frame.minY
         self.width = frame.width
@@ -250,47 +307,208 @@ final class AppUsageEvent {
     }
 }
 
+/// A remembered "these two apps get paired often" signal — no AI, just a
+/// simple local frequency + recency score per unordered app-bundle pair.
+/// Powers the dual-snap auto-pick's "previously paired window" ranking
+/// tier (see `WindowPartnerRanking`/`WindowPairService`): if you keep
+/// pairing VS Code with Safari, snapping VS Code increasingly prefers
+/// Safari for the other side. `bundleIDA` is always the
+/// lexicographically-smaller of the two bundle IDs so a pair is never
+/// stored/counted under both orderings.
+@Model
+final class WindowPairScore {
+    var bundleIDA: String = ""
+    var bundleIDB: String = ""
+    var pairCount: Int = 0
+    var lastPairedAt: Date = Date()
+
+    /// Callers pass the pair in either order — the initializer normalizes it.
+    init(bundleIDA: String, bundleIDB: String) {
+        if bundleIDA < bundleIDB {
+            self.bundleIDA = bundleIDA
+            self.bundleIDB = bundleIDB
+        } else {
+            self.bundleIDA = bundleIDB
+            self.bundleIDB = bundleIDA
+        }
+        self.pairCount = 0
+        self.lastPairedAt = Date()
+    }
+}
+
+/// One detected "session" of back-and-forth switching between the same set
+/// of apps — the raw signal `SmartLayoutEngine` accumulates over time to
+/// decide whether a combination recurs often enough to suggest. One row per
+/// *session* (not per activation — `SmartLayoutEngine` dedupes a
+/// continuously-active session down to a single observation), so
+/// `timesSeen` for a signature is simply a row count, not something that
+/// needs its own counter field prone to getting out of sync.
+@Model
+final class AppCombinationObservation {
+    /// Sorted, `|`-joined bundle IDs — e.g. "com.apple.Terminal|com.apple.dt.Xcode".
+    var signature: String = ""
+    var timestamp: Date = Date()
+
+    init(signature: String) {
+        self.signature = signature
+        self.timestamp = Date()
+    }
+}
+
+/// A not-yet-accepted Smart Layout pattern — surfaced once its signature's
+/// `AppCombinationObservation` count crosses the recurrence threshold.
+/// Never applied automatically; the popover tile always requires an
+/// explicit "Save as Workspace" or "Ignore".
+@Model
+final class SmartLayoutSuggestion {
+    enum Status: String, Codable { case pending, ignored, accepted }
+
+    /// Same sorted/joined shape as `AppCombinationObservation.signature` —
+    /// the join key between the two.
+    var appSignature: String = ""
+    var suggestedName: String = ""
+    var timesSeen: Int = 0
+    var firstSeenAt: Date = Date()
+    var lastSeenAt: Date = Date()
+    var statusRaw: String = Status.pending.rawValue
+    /// Fractional geometry captured the moment this suggestion was first
+    /// created — display-only (an at-a-glance sense of the pattern's
+    /// layout); accepting a suggestion re-captures LIVE geometry via
+    /// `WorkspaceService.saveCurrentLayout`, it doesn't replay these.
+    @Relationship(deleteRule: .cascade, inverse: \SmartLayoutSlot.suggestion)
+    var slots: [SmartLayoutSlot] = []
+
+    var status: Status { Status(rawValue: statusRaw) ?? .pending }
+
+    init(appSignature: String, suggestedName: String) {
+        self.appSignature = appSignature
+        self.suggestedName = suggestedName
+        self.timesSeen = 0
+        self.firstSeenAt = Date()
+        self.lastSeenAt = Date()
+    }
+}
+
+/// One app's fractional on-screen position within a `SmartLayoutSuggestion`
+/// at capture time — same shape as `LayoutSlot`, just additionally tagged
+/// with which app it belongs to (a `SmartLayoutSuggestion` is about a
+/// specific app combination, unlike `LayoutPreset`'s app-agnostic slots).
+@Model
+final class SmartLayoutSlot {
+    var bundleID: String = ""
+    var appName: String = ""
+    var x: Double = 0
+    var y: Double = 0
+    var width: Double = 0
+    var height: Double = 0
+    var suggestion: SmartLayoutSuggestion?
+
+    var fraction: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+
+    init(bundleID: String, appName: String, fraction: CGRect) {
+        self.bundleID = bundleID
+        self.appName = appName
+        self.x = fraction.minX
+        self.y = fraction.minY
+        self.width = fraction.width
+        self.height = fraction.height
+    }
+}
+
 // MARK: - Container
 
-/// Single shared SwiftData stack. Falls back to an in-memory store if the
-/// on-disk store can't be opened (e.g. after a schema change during development)
-/// so the app never crashes at launch over persistence.
+/// How the on-disk store came up at launch. Drives the recovery banner in
+/// Settings → General → Backup.
+enum PersistenceLoadState: Equatable {
+    /// The versioned/migrated on-disk store opened normally.
+    case ready
+    /// The on-disk store couldn't be opened (corruption, an unmigratable
+    /// shape change, disk error, …). Nothing was deleted — `backupURL`
+    /// points at the pre-open snapshot `Persistence` took just in case, and
+    /// the app is currently running against a temporary, unsaved in-memory
+    /// store so it can still launch. The user must explicitly choose to
+    /// recover from a backup or continue with empty data.
+    case failed(description: String, backupURL: URL?)
+}
+
+/// Single shared SwiftData stack. Never deletes the user's on-disk store:
+/// every open attempt is preceded by a timestamped backup (`PersistenceBackup`),
+/// and if the store still can't be opened, the app falls back to a temporary
+/// in-memory container rather than wiping anything — see `loadState`.
 @MainActor
+@Observable
 final class Persistence {
     static let shared = Persistence()
 
     let container: ModelContainer
+    let storeDirectory: URL
+    private(set) var loadState: PersistenceLoadState = .ready
+
     var context: ModelContext { container.mainContext }
 
+    /// Timestamped `.store` snapshots under `Backups/`, newest first —
+    /// candidates for "Recover from Backup…" in Settings.
+    var availableBackups: [URL] { PersistenceBackup.listBackups(storeDir: storeDirectory) }
+
     private init() {
-        let schema = Schema([ClipboardItem.self, Workspace.self,
-                             WorkspaceWindow.self, AppUsageEvent.self,
-                             LayoutPreset.self, LayoutSlot.self,
-                             ParkedWindow.self,
-                             SnapGroup.self, SnapGroupMember.self])
+        let schema = Schema(versionedSchema: SchemaV1.self)
         let dir = URL.applicationSupportDirectory.appendingPathComponent("JgDo", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let config = ModelConfiguration(url: dir.appendingPathComponent("JgDo.store"))
+        storeDirectory = dir
         do {
-            container = try ModelContainer(for: schema, configurations: [config])
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         } catch {
-            // Wipe an incompatible development store and retry once before
-            // giving up and running in-memory. The -wal/-shm sidecars must go
-            // too, or SQLite can replay the old journal into the fresh store.
-            let storePath = dir.appendingPathComponent("JgDo.store").path
-            for suffix in ["", "-wal", "-shm"] {
-                try? FileManager.default.removeItem(atPath: storePath + suffix)
-            }
-            if let retried = try? ModelContainer(for: schema, configurations: [config]) {
-                container = retried
-            } else {
-                let memory = ModelConfiguration(isStoredInMemoryOnly: true)
-                container = try! ModelContainer(for: schema, configurations: [memory])
-            }
+            AppLog.persistence.error("Couldn't create Application Support/JgDo: \(error.localizedDescription, privacy: .public)")
+        }
+        let config = ModelConfiguration(url: dir.appendingPathComponent("JgDo.store"))
+
+        // Always protect the existing store before an open attempt that
+        // could fail — this is the only place data would previously have
+        // been deleted, so it's the only place that needs a safety net.
+        let backupURL = PersistenceBackup.backupBeforeOpen(storeDir: dir)
+
+        do {
+            container = try ModelContainer(for: schema, migrationPlan: JgDoMigrationPlan.self, configurations: [config])
+        } catch {
+            AppLog.persistence.fault("""
+                Failed to open JgDo.store: \(error.localizedDescription, privacy: .public). \
+                Nothing was deleted; a backup was preserved at \
+                \(backupURL?.path ?? "n/a", privacy: .public).
+                """)
+            // Fall back to a clearly temporary, unsaved in-memory container
+            // so the app can still launch. The on-disk file is left exactly
+            // as it was for the user to recover from Settings, or for
+            // manual inspection — never auto-deleted or silently replaced.
+            let memory = ModelConfiguration(isStoredInMemoryOnly: true)
+            container = (try? ModelContainer(for: schema, configurations: [memory]))
+                ?? Self.emergencyEmptyContainer(schema: schema)
+            loadState = .failed(description: error.localizedDescription, backupURL: backupURL)
         }
     }
 
+    /// Last-resort fallback if even an in-memory container fails to build —
+    /// that indicates a programming error in the schema itself (e.g. two
+    /// models with a broken relationship), not a user-data problem, so
+    /// there's nothing left to protect by staying alive. Still never
+    /// touches the on-disk store.
+    private static func emergencyEmptyContainer(schema: Schema) -> ModelContainer {
+        guard let container = try? ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]) else {
+            fatalError("JgDo could not construct even an in-memory model container — this is a schema programming error, not recoverable at runtime.")
+        }
+        return container
+    }
+
     func save() {
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            AppLog.persistence.error("SwiftData save failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Overwrites the live on-disk store with `backup` (itself backed up
+    /// first) and signals the caller to relaunch — a `ModelContainer` can't
+    /// be swapped while running, it's only read once at `init()`.
+    func recover(from backup: URL) throws {
+        try PersistenceBackup.recover(from: backup, storeDir: storeDirectory)
     }
 }

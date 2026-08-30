@@ -137,14 +137,6 @@ final class LayoutEngine {
     }
 
     private func applyAXFrame(_ frame: CGRect, to axWindow: AXUIElement, on screen: NSScreen) {
-        let screenFrame = screen.frame
-        var origin = CGPoint(x: frame.minX, y: screenFrame.maxY - frame.maxY)
-        var size   = CGSize(width: frame.width, height: frame.height)
-        if let pv = AXValueCreate(.cgPoint, &origin) {
-            AXUIElementSetAttributeValue(axWindow, kAXPositionAttribute as CFString, pv)
-        }
-        if let sv = AXValueCreate(.cgSize, &size) {
-            AXUIElementSetAttributeValue(axWindow, kAXSizeAttribute as CFString, sv)
-        }
+        WindowManagerService.setAXFrame(CoordinateSpace.cg(fromAppKit: frame), of: axWindow)
     }
 }

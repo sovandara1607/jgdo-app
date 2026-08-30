@@ -58,6 +58,25 @@ final class MenuBarPopoverPanel: NSPanel {
 
     var isShown: Bool { isVisible }
 
+    /// True while the system's Reduce Motion accessibility setting is on —
+    /// checked live (not cached) each time an animation is about to start,
+    /// since it can change while the app is running.
+    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    /// Physical spring constants approximating SwiftUI's
+    /// `.spring(response: 0.25, dampingFraction: 0.88)` — derived once via
+    /// the standard response/damping-ratio → mass/stiffness/damping
+    /// conversion (ω0 = 2π/response, stiffness = ω0² for mass = 1, damping
+    /// = 2·ζ·√stiffness) rather than computed at animation time. `duration`
+    /// is set explicitly on the animation itself below rather than left to
+    /// the spring's natural settling time, so the "very little bounce"
+    /// spring feel never runs longer than the panel actually needs to open.
+    private enum Spring {
+        static let mass: CGFloat = 1
+        static let stiffness: CGFloat = 631.7
+        static let damping: CGFloat = 44.2
+    }
+
     /// Positions the panel flush under `button`, horizontally centered on it
     /// (rather than right-aligned), sized to `rootView`'s current fitting
     /// size.
@@ -73,34 +92,86 @@ final class MenuBarPopoverPanel: NSPanel {
         // Flush against the bottom of the status item — no arrow, so no gap
         // is needed to make room for one.
         let gap: CGFloat = 1
-        let origin = NSPoint(x: buttonFrame.midX - fitted.width / 2, y: buttonFrame.minY - gap - fitted.height)
-        setFrame(NSRect(origin: origin, size: fitted), display: true)
+        let finalOrigin = NSPoint(x: buttonFrame.midX - fitted.width / 2, y: buttonFrame.minY - gap - fitted.height)
+
+        let reduceMotion = self.reduceMotion
+        // Starts a few points ABOVE its resting position (screen coordinates
+        // are unambiguously Y-up, unlike a layer transform's Y sign, which
+        // depends on the view's flip state) and animates down into place —
+        // reads as the panel extending down out of the icon above it,
+        // without touching the layer's anchor point (recentering that onto
+        // the top edge previously made hit-testing drift out of sync with
+        // what was actually drawn once the content resized — switching
+        // popover tabs, the clipboard section appearing/disappearing —
+        // making some buttons unclickable; that regression isn't worth
+        // reintroducing for a few pixels of polish).
+        let travel: CGFloat = 7
+        let startOrigin = reduceMotion ? finalOrigin : NSPoint(x: finalOrigin.x, y: finalOrigin.y + travel)
+        setFrame(NSRect(origin: startOrigin, size: fitted), display: true)
         invalidateShadow()
 
-        // A quick scale + fade "pop" — more than a bare opacity fade, but
-        // nowhere near AppKit's own "genie" zoom-in (which read as flying in
-        // from far away). `animationBehavior = .none` above still applies to
-        // the window itself; this animates the content layer instead, which
-        // is the only way to get a scale transition out of an `NSWindow`.
-        // Deliberately left at the layer's default center anchor point —
-        // recentering it on the top edge made hit-testing drift out of sync
-        // with what was actually drawn after the content resized (switching
-        // popover tabs, the clipboard section appearing/disappearing), which
-        // was making some buttons unclickable.
+        // Scale + fade "pop", plus the vertical settle above — more than a
+        // bare opacity fade, but nowhere near AppKit's own "genie" zoom-in
+        // (which read as flying in from far away). `animationBehavior =
+        // .none` above still opts the window itself out of that; this
+        // animates the content layer instead, which is the only way to get
+        // a scale transition out of an `NSWindow`.
         hosting.view.wantsLayer = true
         let layer = hosting.view.layer!
-        layer.opacity = 0
-        layer.transform = CATransform3DMakeScale(0.92, 0.92, 1)
+        let startScale: CGFloat = reduceMotion ? 1 : 0.97
+        layer.opacity = reduceMotion ? 1 : 0
+        layer.transform = CATransform3DMakeScale(startScale, startScale, 1)
 
         makeKeyAndOrderFront(nil)
         installOutsideClickMonitor()
 
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.14)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
-        layer.opacity = 1
+        let duration: TimeInterval = reduceMotion ? 0.1 : 0.22
+
+        if reduceMotion {
+            // Scaling/sliding motion is exactly what Reduce Motion asks to
+            // avoid — collapse to a short opacity-only fade, no spring, no
+            // window-frame movement (`startOrigin == finalOrigin` above).
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(duration)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            layer.opacity = 1
+            CATransaction.commit()
+            return
+        }
+
+        let scaleSpring = CASpringAnimation(keyPath: "transform")
+        scaleSpring.fromValue = NSValue(caTransform3D: layer.transform)
+        scaleSpring.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        scaleSpring.mass = Spring.mass
+        scaleSpring.stiffness = Spring.stiffness
+        scaleSpring.damping = Spring.damping
+        scaleSpring.duration = duration
         layer.transform = CATransform3DIdentity
-        CATransaction.commit()
+        layer.add(scaleSpring, forKey: "openScale")
+
+        let opacitySpring = CASpringAnimation(keyPath: "opacity")
+        opacitySpring.fromValue = 0
+        opacitySpring.toValue = 1
+        opacitySpring.mass = Spring.mass
+        opacitySpring.stiffness = Spring.stiffness
+        opacitySpring.damping = Spring.damping
+        opacitySpring.duration = duration
+        layer.opacity = 1
+        layer.add(opacitySpring, forKey: "openOpacity")
+
+        // The vertical settle is a window-frame move, a separate mechanism
+        // from the layer transform above — AppKit's own animator proxy,
+        // already used for exactly this kind of fade/slide elsewhere in the
+        // app (the Command Palette's open animation). A plain `.easeOut`
+        // curve here (rather than a second spring) is intentional: over
+        // only ~7pt of travel a spring's overshoot wouldn't read as
+        // anything but noise, and `NSAnimationContext` has no spring
+        // timing function to give it anyway.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.animator().setFrame(NSRect(origin: finalOrigin, size: fitted), display: true)
+        }
     }
 
     func performClose() {
@@ -109,19 +180,20 @@ final class MenuBarPopoverPanel: NSPanel {
         removeOutsideClickMonitor()
         onClose?()
 
+        let reduceMotion = self.reduceMotion
         // Mirror the open "pop" with a quick shrink + fade, then actually
         // order the window out once it's finished — closing shouldn't be a
-        // harder cut than opening was.
+        // harder cut than opening was, but it IS faster: no spring here
+        // (a bouncy close reads as sluggish, not polished), just a quick
+        // linear-ish ease-in straight to gone.
         guard let layer = contentViewController?.view.layer else {
             orderOut(nil)
             contentViewController = nil
             isClosing = false
             return
         }
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.1)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeIn))
-        CATransaction.setCompletionBlock { [weak self] in
+        let duration: TimeInterval = reduceMotion ? 0.08 : 0.15
+        let finishClosing = { [weak self] in
             guard let self else { return }
             self.orderOut(nil)
             // Tears the SwiftUI content down now rather than leaving it
@@ -133,8 +205,24 @@ final class MenuBarPopoverPanel: NSPanel {
             self.contentViewController = nil
             self.isClosing = false
         }
+
+        if !reduceMotion, let screen = self.screen ?? NSScreen.main {
+            let travel: CGFloat = 4
+            var raised = frame
+            raised.origin.y = min(raised.origin.y + travel, screen.frame.maxY - raised.height)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = duration
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                self.animator().setFrame(raised, display: true)
+            }
+        }
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeIn))
+        CATransaction.setCompletionBlock(finishClosing)
         layer.opacity = 0
-        layer.transform = CATransform3DMakeScale(0.92, 0.92, 1)
+        layer.transform = reduceMotion ? layer.transform : CATransform3DMakeScale(0.98, 0.98, 1)
         CATransaction.commit()
     }
 

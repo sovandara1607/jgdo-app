@@ -83,6 +83,44 @@ extension View {
     }
 }
 
+// MARK: - HUD card (layout-hotkey confirmation surfaces)
+
+/// The dark-tinted, accent-bordered "system HUD" card shared by every
+/// layout-hotkey confirmation surface — the ⌃⌥←/→ layout-cycle overlay, its
+/// "fill other side" partner search, the Layout Picker, and the plain
+/// "Safari → Left Half" action card. All four show the same kind of
+/// information for the same family of hotkeys, so they read as one visual
+/// family instead of four independently-styled cards.
+struct HUDCard: ViewModifier {
+    var cornerRadius: CGFloat
+    /// Each call site's shadow used to track its own corner radius
+    /// (bigger card → softer/bigger shadow) — kept as the default here
+    /// rather than hardcoded, so a new call site gets a sensible shadow for
+    /// free.
+    var shadowOpacity: Double = 0.4
+    var shadowY: CGFloat = 10
+
+    func body(content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.18))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1.25)
+            )
+            .shadow(color: .black.opacity(shadowOpacity), radius: cornerRadius, y: shadowY)
+    }
+}
+
+extension View {
+    func hudCard(cornerRadius: CGFloat, shadowOpacity: Double = 0.4, shadowY: CGFloat = 10) -> some View {
+        modifier(HUDCard(cornerRadius: cornerRadius, shadowOpacity: shadowOpacity, shadowY: shadowY))
+    }
+}
+
 // MARK: - Scrollbar hider
 
 /// Force-disables the enclosing `ScrollView`'s native scroller. SwiftUI's
@@ -169,6 +207,59 @@ struct KeyHint: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+// MARK: - Mini layout schematic (current/proposed window preview)
+
+/// A miniature "here's roughly what the screen will look like" preview —
+/// originally `OrganizeWorkspaceView`'s private `schematic(title:frames:)`,
+/// extracted here so `NLWorkspaceView`'s command preview can show the exact
+/// same current/proposed visual language instead of inventing a second one.
+struct SchematicPreview: View {
+    let title: String
+    let frames: [CGRect]   // AppKit coords, absolute (same screen as `screen`)
+    let screen: NSScreen
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 8.5, weight: .semibold))
+                .tracking(0.4)
+                .foregroundStyle(.tertiary)
+            GeometryReader { geo in
+                let scaleX = geo.size.width / max(screen.visibleFrame.width, 1)
+                let scaleY = geo.size.height / max(screen.visibleFrame.height, 1)
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                    ForEach(Array(frames.enumerated()), id: \.offset) { i, frame in
+                        let vf = screen.visibleFrame
+                        let boxWidth: CGFloat = max(frame.width * scaleX - 2, 2)
+                        let boxHeight: CGFloat = max(frame.height * scaleY - 2, 2)
+                        let centerX: CGFloat = (frame.minX - vf.minX + frame.width / 2) * scaleX
+                        let centerY: CGFloat = geo.size.height - (frame.minY - vf.minY + frame.height / 2) * scaleY
+                        let border = RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .strokeBorder(Color.accentColor, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.35))
+                            .overlay(border)
+                            .frame(width: boxWidth, height: boxHeight)
+                            .position(x: centerX, y: centerY)
+                            .id(i)
+                    }
+                }
+                // `.position()` doesn't clip to the parent's bounds, so a
+                // window taller/wider than `screen.visibleFrame` (e.g. one
+                // that extends behind the menu bar) can push a box's
+                // computed center outside this schematic entirely. The
+                // schematic is just a miniature preview, so it should never
+                // paint outside its own rounded rect regardless of that math.
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(screen.visibleFrame.width / max(screen.visibleFrame.height, 1), contentMode: .fit)
     }
 }
 

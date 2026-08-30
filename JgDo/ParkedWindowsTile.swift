@@ -13,7 +13,7 @@ struct ParkedWindowsTile: View {
                    progress: nil) {
             VStack(alignment: .leading, spacing: 6) {
                 if service.parkedWindows.isEmpty {
-                    Text("Park a window to tuck it out of the way without losing its place — restore it exactly where it was.")
+                    Text("Tuck a window away and restore it later.")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -55,11 +55,12 @@ struct ParkedWindowsTile: View {
                     .font(.system(size: 15))
                     .foregroundStyle(Color.accentColor)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .help("Restore")
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+        .hoverRowBackground()
         .contextMenu {
             Button("Restore") { service.restore(parked) }
             Divider()

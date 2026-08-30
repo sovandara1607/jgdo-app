@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
-/// The redesigned ghost-preview overlay content: a "snap target" reticle —
-/// tinted tile, glowing corner brackets, and a colored ambient shadow —
-/// replacing the old flat, hand-drawn blue rectangle. Deliberately no
+/// A quiet, window-shaped placement preview. The faint title-bar treatment
+/// makes the destination read as a future app window rather than a generic
+/// selection rectangle, while the restrained accent edge keeps it visible
+/// on both light and dark desktops. Deliberately no
 /// `.glassEffect()`: this tile's position is animating for nearly its whole
 /// visible lifetime, and recomputing real-time backdrop blur every frame
 /// while moving is exactly what caused the stutter this file used to have.
@@ -22,16 +24,18 @@ import SwiftUI
 /// reappears from wherever it last was instead of growing out of (0,0).
 struct SnapPreviewContentView: View {
     let state: SnapPreviewState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geo in
             let h = geo.size.height
+            let shouldAnimate = state.animate && !reduceMotion
             ZStack {
-                GhostTile(rect: state.secondary, containerHeight: h, isPrimary: false, animate: state.animate)
-                GhostTile(rect: state.primary, containerHeight: h, isPrimary: true, animate: state.animate)
-                IndicatorLabel(text: state.indicator, rect: state.primary, containerHeight: h, animate: state.animate)
-                GuideBar(rect: state.guide, containerHeight: h, animate: state.animate)
-                HighlightOutline(rect: state.highlight, containerHeight: h, animate: state.animate)
+                GhostTile(rect: state.secondary, containerHeight: h, isPrimary: false, animate: shouldAnimate)
+                GhostTile(rect: state.primary, containerHeight: h, isPrimary: true, animate: shouldAnimate)
+                IndicatorLabel(text: state.indicator, rect: state.primary, containerHeight: h, animate: shouldAnimate)
+                GuideBar(rect: state.guide, containerHeight: h, animate: shouldAnimate)
+                HighlightOutline(rect: state.highlight, containerHeight: h, animate: shouldAnimate)
             }
         }
         .allowsHitTesting(false)
@@ -42,7 +46,7 @@ struct SnapPreviewContentView: View {
 /// A fast, minimally-bouncy spring for discrete snaps — settles quickly
 /// (~0.2s) with almost no overshoot, so it still looks crisp under rapid
 /// repeated presses (e.g. cycling ⌃⌥→ quickly) instead of visibly wobbling.
-private let snapAnimation = Animation.spring(response: 0.2, dampingFraction: 0.88)
+private let snapAnimation = Animation.spring(response: 0.18, dampingFraction: 0.94)
 
 private func isValid(_ rect: CGRect?) -> Bool {
     guard let rect else { return false }
@@ -58,42 +62,34 @@ private struct GhostTile: View {
     let animate: Bool
     @State private var shown: CGRect = .zero
 
-    private let cornerRadius: CGFloat = 20
-
     private var center: CGPoint { CGPoint(x: shown.midX, y: containerHeight - shown.midY) }
-    private var size: CGSize { CGSize(width: max(shown.width - 12, 1), height: max(shown.height - 12, 1)) }
+    private var size: CGSize { CGSize(width: max(shown.width - 10, 1), height: max(shown.height - 10, 1)) }
+    private var cornerRadius: CGFloat {
+        min(18, max(10, min(size.width, size.height) * 0.035))
+    }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         ZStack {
-            // Flat tint only — no `.glassEffect()`. Its real-time backdrop
-            // blur is expensive to recompute every frame, and this tile's
-            // position is animating (live ⌘-drag tracking, or settling into
-            // a discrete snap) for basically its entire visible lifetime, so
-            // there's no point where the expensive version would actually
-            // pay for itself.
-            shape.fill(isPrimary ? Color.accentColor.opacity(0.24) : Color.white.opacity(0.08))
+            shape.fill(Color(nsColor: .windowBackgroundColor).opacity(isPrimary ? 0.72 : 0.52))
+            shape.fill(Color.accentColor.opacity(isPrimary ? 0.10 : 0.035))
             shape
                 .strokeBorder(
                     LinearGradient(
                         colors: isPrimary
-                            ? [Color.accentColor.opacity(0.95), Color.accentColor.opacity(0.4)]
-                            : [Color.white.opacity(0.6), Color.white.opacity(0.2)],
+                            ? [Color.white.opacity(0.68), Color.accentColor.opacity(0.72)]
+                            : [Color.white.opacity(0.42), Color.white.opacity(0.16)],
                         startPoint: .top, endPoint: .bottom
                     ),
-                    lineWidth: isPrimary ? 2.5 : 1.5
+                    lineWidth: isPrimary ? 1.5 : 1
                 )
-            if isPrimary {
-                CornerBrackets(cornerLength: min(size.width, size.height) * 0.16)
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .padding(-7)
-            }
+            shape.strokeBorder(Color.black.opacity(0.16), lineWidth: 1).padding(1)
+            PreviewWindowChrome(isPrimary: isPrimary)
+                .clipShape(shape)
         }
         .frame(width: size.width, height: size.height)
-        // Same reasoning as the fill above — keep the ambient glow cheap
-        // unconditionally instead of a bigger blur that only makes sense at
-        // rest, which this tile rarely is.
-        .shadow(color: isPrimary ? Color.accentColor.opacity(0.3) : .clear, radius: 8, y: 4)
+        .shadow(color: .black.opacity(isPrimary ? 0.24 : 0.12), radius: 18, y: 8)
+        .shadow(color: isPrimary ? Color.accentColor.opacity(0.12) : .clear, radius: 7)
         .position(center)
         .opacity(isValid(rect) ? 1 : 0)
         .animation(animate ? snapAnimation : nil, value: shown)
@@ -102,24 +98,34 @@ private struct GhostTile: View {
     }
 }
 
-/// Four L-shaped corner marks framing a tile, like a camera focus reticle —
-/// reinforces "this is a snap target" at a glance, sitting just outside the
-/// glass tile's own edge.
-private struct CornerBrackets: Shape {
-    var cornerLength: CGFloat
+/// A minimal macOS-window cue. It only appears when the target is large
+/// enough, so narrow thirds and small available-space previews stay clean.
+private struct PreviewWindowChrome: View {
+    let isPrimary: Bool
 
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        func corner(_ point: CGPoint, _ dx: CGFloat, _ dy: CGFloat) {
-            p.move(to: CGPoint(x: point.x, y: point.y + dy * cornerLength))
-            p.addLine(to: point)
-            p.addLine(to: CGPoint(x: point.x + dx * cornerLength, y: point.y))
+    var body: some View {
+        GeometryReader { geo in
+            if geo.size.width >= 150, geo.size.height >= 90 {
+                VStack(spacing: 0) {
+                    HStack(spacing: 5) {
+                        ForEach(0..<3, id: \.self) { index in
+                            Circle()
+                                .fill(index == 0 && isPrimary
+                                      ? Color.accentColor.opacity(0.8)
+                                      : Color.white.opacity(0.34))
+                                .frame(width: 6, height: 6)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 13)
+                    .frame(height: 28)
+                    Rectangle()
+                        .fill(Color.white.opacity(0.13))
+                        .frame(height: 1)
+                    Spacer(minLength: 0)
+                }
+            }
         }
-        corner(CGPoint(x: rect.minX, y: rect.minY), 1, 1)
-        corner(CGPoint(x: rect.maxX, y: rect.minY), -1, 1)
-        corner(CGPoint(x: rect.maxX, y: rect.maxY), -1, -1)
-        corner(CGPoint(x: rect.minX, y: rect.maxY), 1, -1)
-        return p
     }
 }
 
@@ -140,10 +146,14 @@ private struct IndicatorLabel: View {
 
     var body: some View {
         Text(shownText)
-            .font(.system(size: 36, weight: .semibold, design: .rounded))
+            .font(.system(size: 15, weight: .semibold, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(.white.opacity(0.9))
-            .shadow(color: .black.opacity(0.4), radius: 8, y: 2)
+            .foregroundStyle(.white.opacity(0.94))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.black.opacity(0.48), in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 1))
+            .shadow(color: .black.opacity(0.24), radius: 8, y: 3)
             .contentTransition(.numericText())
             .position(center)
             .opacity(text != nil && isValid(rect) ? 1 : 0)
@@ -165,23 +175,19 @@ private struct GuideBar: View {
     let containerHeight: CGFloat
     let animate: Bool
     @State private var shown: CGRect = .zero
-    @State private var pulse = false
-
     private var center: CGPoint { CGPoint(x: shown.midX, y: containerHeight - shown.midY) }
 
     var body: some View {
         Capsule()
             .fill(Color.accentColor)
             .frame(width: max(shown.width, 1), height: max(shown.height, 1))
-            .shadow(color: Color.accentColor.opacity(pulse ? 0.9 : 0.35), radius: pulse ? 16 : 6)
+            .overlay(Capsule().strokeBorder(.white.opacity(0.5), lineWidth: 1))
+            .shadow(color: Color.accentColor.opacity(0.5), radius: 5)
             .position(center)
             .opacity(isValid(rect) ? 1 : 0)
             .animation(animate ? snapAnimation : nil, value: shown)
             .onAppear {
                 if isValid(rect) { shown = rect! }
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                    pulse = true
-                }
             }
             .onChange(of: rect) { _, new in if isValid(new) { shown = new! } }
     }
@@ -194,24 +200,23 @@ private struct HighlightOutline: View {
     let containerHeight: CGFloat
     let animate: Bool
     @State private var shown: CGRect = .zero
-    @State private var phase: CGFloat = 0
-
     private var center: CGPoint { CGPoint(x: shown.midX, y: containerHeight - shown.midY) }
     private var size: CGSize { CGSize(width: max(shown.width, 1), height: max(shown.height, 1)) }
 
     var body: some View {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(style: StrokeStyle(lineWidth: 3, dash: [8, 6], dashPhase: phase))
-            .foregroundStyle(Color.orange)
+            .strokeBorder(Color.orange.opacity(0.9), lineWidth: 2)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.orange.opacity(0.035))
+            )
             .frame(width: size.width, height: size.height)
+            .shadow(color: .orange.opacity(0.18), radius: 5)
             .position(center)
             .opacity(isValid(rect) ? 1 : 0)
             .animation(animate ? snapAnimation : nil, value: shown)
             .onAppear {
                 if isValid(rect) { shown = rect! }
-                withAnimation(.linear(duration: 0.6).repeatForever(autoreverses: false)) {
-                    phase = -14
-                }
             }
             .onChange(of: rect) { _, new in if isValid(new) { shown = new! } }
     }

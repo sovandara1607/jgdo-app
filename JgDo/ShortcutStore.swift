@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import os
 
 // MARK: - Key combo
 
@@ -74,6 +75,7 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
     case toggleSwitcher
     case clipboardHistory
     case commandPalette
+    case windowSwitcher
     case snapLeftHalf, snapRightHalf, snapTopHalf, snapBottomHalf
     case snapTopLeft, snapTopRight, snapBottomLeft, snapBottomRight
     case snapMaximize, snapCenter
@@ -88,6 +90,10 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
     case restoreAllParked
     case createSnapGroup
     case organizeWorkspace
+    case floatFrontmostWindow
+    case nlWorkspace
+    case showLayoutPicker
+    case layoutFillOtherSide
 
     var id: String { rawValue }
 
@@ -112,6 +118,7 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
         case .toggleSwitcher:   return "Open app switcher"
         case .clipboardHistory: return "Open clipboard history"
         case .commandPalette:   return "Open command palette"
+        case .windowSwitcher:   return "Window Switcher (search + focus any window)"
         case .shrinkWindow:     return "Shrink window"
         case .growWindow:       return "Grow window"
         case .undoSnap:         return "Undo last snap/move"
@@ -125,6 +132,10 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
         case .restoreAllParked:      return "Restore all parked windows"
         case .createSnapGroup:       return "Create Snap Group from current windows"
         case .organizeWorkspace:     return "Organize Workspace…"
+        case .floatFrontmostWindow:  return "Float frontmost window (Picture-in-Picture)"
+        case .nlWorkspace:           return "Natural-Language Workspace…"
+        case .showLayoutPicker:      return "Show Layout Picker"
+        case .layoutFillOtherSide:   return "Swap other side with… (after ⌃⌥←/→)"
         default:                return layout?.rawValue ?? rawValue
         }
     }
@@ -133,6 +144,7 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
         .toggleSwitcher:   KeyCombo(keyCode: 49, option: true),                 // ⌥Space
         .clipboardHistory: KeyCombo(keyCode: 9, option: true),                  // ⌥V
         .commandPalette:   KeyCombo(keyCode: 49, command: true, option: true),  // ⌘⌥Space
+        .windowSwitcher:   KeyCombo(keyCode: 13, option: true, control: true, shift: true),  // ⌃⌥⇧W
         .shrinkWindow:     KeyCombo(keyCode: 47, option: true, control: true, shift: true), // ⌃⌥⇧. (>)
         .growWindow:       KeyCombo(keyCode: 43, option: true, control: true, shift: true), // ⌃⌥⇧, (<)
         .snapLeftHalf:     KeyCombo(keyCode: 123, option: true, control: true), // ⌃⌥←
@@ -156,12 +168,16 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
         .restoreAllParked:      KeyCombo(keyCode: 35, option: true, control: true, shift: true),   // ⌃⌥⇧P
         .createSnapGroup:       KeyCombo(keyCode: 5,  option: true, control: true),                // ⌃⌥G
         .organizeWorkspace:     KeyCombo(keyCode: 31, option: true, control: true),                // ⌃⌥O
+        .floatFrontmostWindow:  KeyCombo(keyCode: 3,  option: true, control: true, shift: true),   // ⌃⌥⇧F
+        .nlWorkspace:           KeyCombo(keyCode: 45, option: true, control: true, shift: true),   // ⌃⌥⇧N
+        .showLayoutPicker:      KeyCombo(keyCode: 37, option: true, control: true, shift: true),   // ⌃⌥⇧L
+        .layoutFillOtherSide:   KeyCombo(keyCode: 48, option: true, control: true),                // ⌃⌥⇥
     ]
 
     /// Shared grouping used by both the Settings → Shortcuts list and the
     /// cheat-sheet overlay, so the two never drift out of sync.
     static let categories: [(title: String, actions: [HotkeyAction])] = [
-        ("Global", [.toggleSwitcher, .clipboardHistory, .commandPalette, .showCheatSheet, .toggleScratchpad]),
+        ("Global", [.toggleSwitcher, .clipboardHistory, .commandPalette, .windowSwitcher, .showCheatSheet, .toggleScratchpad]),
         ("Window Snapping", HotkeyAction.allCases.filter { $0.layout != nil }),
         ("Resize Steps", [.shrinkWindow, .growWindow]),
         ("Undo", [.undoSnap]),
@@ -171,6 +187,10 @@ nonisolated enum HotkeyAction: String, CaseIterable, Codable, Identifiable, Send
         ("Window Parking", [.parkFrontmostWindow, .restoreAllParked]),
         ("Snap Groups", [.createSnapGroup]),
         ("Organize Workspace", [.organizeWorkspace]),
+        ("Picture-in-Picture", [.floatFrontmostWindow]),
+        ("Natural-Language Workspace", [.nlWorkspace]),
+        ("Layout Picker", [.showLayoutPicker]),
+        ("Layout Overlay", [.layoutFillOtherSide]),
     ]
 }
 
@@ -192,9 +212,17 @@ final class ShortcutStore {
 
     private init() {
         var merged = HotkeyAction.defaultCombos
-        if let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
-           let saved = try? JSONDecoder().decode([HotkeyAction: KeyCombo].self, from: data) {
-            merged.merge(saved) { _, custom in custom }
+        if let data = UserDefaults.standard.data(forKey: Self.defaultsKey) {
+            do {
+                let saved = try JSONDecoder().decode([HotkeyAction: KeyCombo].self, from: data)
+                merged.merge(saved) { _, custom in custom }
+            } catch {
+                // Falls back to defaults — any custom keybindings the user
+                // set are silently lost otherwise, so this is worth a log
+                // even though there's no user-facing surface to report it
+                // to at init time.
+                AppLog.hotkeys.error("Couldn't decode saved shortcuts, falling back to defaults: \(error.localizedDescription, privacy: .public)")
+            }
         }
         map = merged
         Self.lookup = merged.map { ($0.key, $0.value) }
@@ -229,8 +257,11 @@ final class ShortcutStore {
     }
 
     private func persist() {
-        if let data = try? JSONEncoder().encode(map) {
+        do {
+            let data = try JSONEncoder().encode(map)
             UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        } catch {
+            AppLog.hotkeys.error("Couldn't save shortcut changes: \(error.localizedDescription, privacy: .public)")
         }
         Self.lookup = map.map { ($0.key, $0.value) }
     }
